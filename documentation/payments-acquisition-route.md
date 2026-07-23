@@ -33,12 +33,25 @@ a source amount whose `toAmountMin` covers that shortfall:
 1. Quote an estimated source amount for the leg.
 2. If `toAmountMin` is short, scale the source amount by
    `ceil(currentSource * requiredOutput / toAmountMin)` and quote again.
-3. Allow no more than four quotes per leg. Honor one bounded `Retry-After`
-   response for HTTP 429.
+3. Allow no more than four planning quote attempts per leg. Honor at most one
+   bounded `Retry-After` retry for each attempt that receives HTTP 429.
 4. Sum both source amounts and fail before any approval if the user-provided
    maximum would be exceeded.
-5. Refresh each route immediately before its approval and submission. Recheck
-   the output requirement, target allowlist, expiry, and cumulative maximum.
+5. Finalize each leg with at most two additional fixed-input quote attempts:
+   one immediately before approval and one after approval confirmation. The
+   fixed input is the exact planned source amount; a refresh must not silently
+   increase it. Recheck the output requirement, target allowlist, expiry,
+   cumulative source maximum, and total native-gas maximum on both attempts.
+
+The planning and finalization phases therefore permit at most six quote
+attempts per leg and at most twelve HTTP requests if every attempt uses its
+single 429 retry. If the post-approval fixed-input route no longer meets the
+required output, changes any allowlisted field, or exceeds either cap, do not
+execute it and do not reapprove automatically. Report the exact outstanding
+allowance and route identifiers and require an explicit rerun. A rerun must
+re-read the allowance; if its newly planned exact input differs, replace the
+allowance before obtaining another post-approval route. This is the only
+reapproval path.
 
 The two legs are independent transactions. A FIL leg that succeeds must not be
 repeated merely because the USDFC leg is incomplete.
@@ -85,14 +98,29 @@ The captured path was:
 
 The provider estimated about 90 seconds. The 5 USDC probes estimated about
 0.000012 Arbitrum ETH in source execution gas and included a separate native
-`transactionRequest.value` for destination gas. Runtime checks must use the
-quoted values rather than these observations:
+`transactionRequest.value` for destination gas. The two captured execution
+commitments total 0.000064392661400073 Arbitrum ETH. That figure excludes the
+ERC-20 approval transactions, so it is not itself a sufficient source-native
+budget.
+
+Before any approval, runtime must estimate every approval transaction the run
+will send and combine those estimates with every current route commitment:
 
 ```text
-required source native balance =
-  transactionRequest.value
-  + transactionRequest.gasLimit * transactionRequest.maxFeePerGas
+required source native balance = sum(
+  approval.gasLimit * approval.feeCap
+) + sum(
+  route.transactionRequest.value
+  + route.transactionRequest.gasLimit * route.transactionRequest.feeCap
+)
 ```
+
+Here `feeCap` is the transaction's effective maximum fee per gas, such as
+`maxFeePerGas`. Include allowance replacements and any other source-chain
+transaction the run constructs. Recompute this total after each route refresh
+and before every signature, reserving the still-required transactions for the
+other leg. Fail before the first approval, or stop before the next signature,
+if either the wallet balance or the hard native-gas cap is insufficient.
 
 ## Credential and request handling
 
@@ -112,7 +140,9 @@ Every quote request must set `quoteOnly: false`, use the same signer for
 Squid recommends refreshing routes every 20 seconds. The captured Axelar route
 also reported an `expiryOffset` of 30 seconds. Filecoin Pin must never submit an
 expired route and must refresh after user interaction, approval delay, or any
-other pause that crosses the refresh window.
+other pause that crosses the refresh window. The post-approval refresh uses the
+already-approved fixed source amount; it either still satisfies the planned
+output and all caps or the leg stops without execution.
 
 ## Spender and signing contract
 
@@ -133,9 +163,12 @@ Before every approval or execution, Filecoin Pin must verify that:
 - the exact leg input and cumulative source spend remain within the cap.
 
 Authorize only the exact source amount for the current leg. Re-read allowance
-for each leg even when both quotes currently return the same target. If a future
-route requires Permit2, returns a different target, or changes the spender
-model, fail closed and update this decision record before enabling it.
+for each leg even when both quotes currently return the same target. A
+post-approval refresh never authorizes an increased amount in the same run. If
+the approved amount is no longer sufficient, stop and require an explicit
+rerun; that rerun replaces a differing stale allowance before execution. If a
+future route requires Permit2, returns a different target, or changes the
+spender model, fail closed and update this decision record before enabling it.
 
 ## Status, timeout, and recovery
 
@@ -189,13 +222,18 @@ Issue #6 must use these hard maximums unless a separately reviewed update
 lowers or raises them:
 
 - **10 USDC total source-token spend** across both legs;
-- **0.0001 Arbitrum ETH** reserved for the two source transactions;
+- **0.0001 Arbitrum ETH** total for every source-chain transaction commitment,
+  including exact-amount approvals, allowance replacements, and both route
+  executions;
 - exact-amount ERC-20 approvals only.
 
-Any current quote that exceeds either cap is a no-go for the smoke test. The
-operator must record starting balances, both quotes, approvals, transaction
-hashes, destination arrivals, the Filecoin Pay deposit, and the no-duplicate
-rerun.
+The captured route executions consume about 64.4% of that native cap before
+approval gas. Runtime estimation, not this observation, decides whether the
+complete transaction set fits. Any current quote or approval plan that causes
+either cap to be exceeded is a no-go for the smoke test. The operator must
+record starting balances, both quotes, approval gas estimates and transactions,
+route transaction hashes, destination arrivals, the Filecoin Pay deposit, and
+the no-duplicate rerun.
 
 Same-chain FIL to USDFC remains deferred. The approved first route acquires both
 assets directly from Arbitrum USDC, which avoids spending the newly acquired
