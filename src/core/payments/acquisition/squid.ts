@@ -1,0 +1,252 @@
+import type { Address } from 'viem'
+import { FILECOIN_MAINNET_CHAIN_ID, FILECOIN_NATIVE_TOKEN, FILECOIN_USDFC, SQUID_ROUTER } from './source-assets.js'
+import type {
+  AcquisitionErrorCode,
+  AcquisitionExecutionStatus,
+  AcquisitionLeg,
+  PlannedAcquisitionQuote,
+} from './types.js'
+
+export const SQUID_API_URL = 'https://apiplus.squidrouter.com/v2'
+const MAX_RATE_LIMIT_RETRIES = 1
+
+export interface SquidRouteRequest {
+  fromAddress: Address
+  sourceAmount: bigint
+  leg: AcquisitionLeg
+  slippage: number
+}
+
+interface SquidRouteResponse {
+  route?: {
+    quoteId?: string
+    params?: Record<string, unknown>
+    estimate?: { toAmountMin?: string; estimatedRouteDuration?: number }
+    transactionRequest?: {
+      target?: string
+      data?: string
+      value?: string
+      gasLimit?: string
+      maxFeePerGas?: string
+      expiry?: string
+      requestId?: string
+    }
+  }
+}
+
+export interface SquidProviderOptions {
+  integratorId: string | undefined
+  fetchFn?: typeof fetch
+  now?: () => number
+}
+
+export interface SquidStatusResponse {
+  squidTransactionStatus?: string
+  id?: string
+  axelarTransactionUrl?: string
+  fromChain?: { transactionId?: string; transactionUrl?: string }
+  toChain?: { transactionId?: string; transactionUrl?: string }
+}
+
+export interface SquidStatusRequest {
+  transactionId: string
+  fromChainId: string
+  toChainId: string
+  quoteId: string
+  requestId?: string
+}
+
+export interface SquidStatusResult {
+  status: AcquisitionExecutionStatus
+  errorCode?: AcquisitionErrorCode
+  sourceTransactionUrl?: string
+  destinationTransactionHash?: string
+  destinationTransactionUrl?: string
+  providerExplorerUrl?: string
+}
+
+function providerError(message: string, code: AcquisitionErrorCode = 'quote-failed'): Error {
+  const error = new Error(message)
+  error.name = code
+  return error
+}
+
+function destinationToken(asset: AcquisitionLeg['asset']): string {
+  return asset === 'fil' ? FILECOIN_NATIVE_TOKEN : FILECOIN_USDFC
+}
+
+function asPositiveBigInt(value: string | undefined, label: string): bigint {
+  if (value == null || !/^\d+$/.test(value)) throw providerError(`Squid route is missing ${label}`)
+  return BigInt(value)
+}
+
+async function squidFetch(url: string, init: RequestInit, fetchFn: typeof fetch): Promise<Response> {
+  let rateLimitRetries = 0
+  while (true) {
+    const response = await fetchFn(url, init)
+    if (response.status !== 429 || rateLimitRetries >= MAX_RATE_LIMIT_RETRIES) return response
+    rateLimitRetries += 1
+    const retryAfter = Number(response.headers.get('retry-after') ?? '0')
+    if (!Number.isFinite(retryAfter) || retryAfter < 0 || retryAfter > 5) return response
+    await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000))
+  }
+}
+
+/** Fetch and strictly validate a current Squid route before any signature. */
+export async function getSquidRoute(
+  request: SquidRouteRequest,
+  options: SquidProviderOptions
+): Promise<PlannedAcquisitionQuote> {
+  if (!options.integratorId) throw providerError('Token acquisition requires SQUID_INTEGRATOR_ID')
+  if (request.leg.source?.chainId !== 42161 || request.leg.source.symbol !== 'USDC') {
+    throw providerError('Only Arbitrum USDC is supported for token acquisition', 'unsupported-source')
+  }
+  const fetchFn = options.fetchFn ?? fetch
+  const body = {
+    fromAddress: request.fromAddress,
+    toAddress: request.fromAddress,
+    fromChain: '42161',
+    fromToken: request.leg.source.token,
+    fromAmount: request.sourceAmount.toString(),
+    toChain: String(FILECOIN_MAINNET_CHAIN_ID),
+    toToken: destinationToken(request.leg.asset),
+    slippage: request.slippage,
+    quoteOnly: false,
+  }
+  const response = await squidFetch(
+    `${SQUID_API_URL}/route`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-integrator-id': options.integratorId },
+      body: JSON.stringify(body),
+    },
+    fetchFn
+  )
+  if (!response.ok) throw providerError(`Squid quote failed (${response.status})`)
+  const parsed = (await response.json()) as SquidRouteResponse
+  const route = parsed.route
+  const transaction = route?.transactionRequest
+  const params = route?.params
+  if (
+    route?.quoteId == null ||
+    transaction == null ||
+    params == null ||
+    transaction.target?.toLowerCase() !== SQUID_ROUTER.toLowerCase()
+  ) {
+    throw providerError('Squid route failed the approved-target validation')
+  }
+  if (
+    params.fromChain !== '42161' ||
+    params.fromAmount !== request.sourceAmount.toString() ||
+    params.toChain !== String(FILECOIN_MAINNET_CHAIN_ID) ||
+    params.fromToken !== request.leg.source.token ||
+    params.toToken !== destinationToken(request.leg.asset) ||
+    params.fromAddress !== request.fromAddress ||
+    params.toAddress !== request.fromAddress
+  ) {
+    throw providerError('Squid route failed the approved-asset validation')
+  }
+  const expiresAt = Number(transaction.expiry)
+  const now = Math.floor((options.now ?? Date.now)() / 1000)
+  if (!Number.isFinite(expiresAt) || expiresAt <= now) throw providerError('Squid returned an expired route')
+  const data = transaction.data
+  if (data == null || data === '0x') throw providerError('Squid route has no calldata')
+  return {
+    id: route.quoteId,
+    asset: request.leg.asset,
+    sourceAmount: request.sourceAmount,
+    destinationAmount: asPositiveBigInt(route.estimate?.toAmountMin, 'minimum destination amount'),
+    target: transaction.target,
+    data,
+    value: asPositiveBigInt(transaction.value ?? '0', 'transaction value'),
+    gasLimit: asPositiveBigInt(transaction.gasLimit, 'gas limit'),
+    maxFeePerGas: asPositiveBigInt(transaction.maxFeePerGas, 'maximum fee per gas'),
+    expiresAt,
+    estimatedRouteDurationSeconds:
+      typeof route.estimate?.estimatedRouteDuration === 'number' && route.estimate.estimatedRouteDuration > 0
+        ? route.estimate.estimatedRouteDuration
+        : 0,
+    ...(transaction.requestId != null
+      ? { requestId: transaction.requestId }
+      : response.headers.get('x-request-id') != null
+        ? { requestId: response.headers.get('x-request-id') as string }
+        : {}),
+  }
+}
+
+export function mapSquidStatus(status: string | undefined): {
+  status: AcquisitionExecutionStatus
+  errorCode?: AcquisitionErrorCode
+} {
+  switch (status) {
+    case 'success':
+      return { status: 'confirmed' }
+    case 'partial_success':
+      return { status: 'partial', errorCode: 'partial-success' }
+    case 'refund':
+      return { status: 'refunded', errorCode: 'refund-failed' }
+    case 'ongoing':
+    case 'not_found':
+      return { status: 'submitted', errorCode: 'timed-out' }
+    case 'needs_gas':
+      return { status: 'failed', errorCode: 'insufficient-source-gas' }
+    default:
+      return { status: 'failed', errorCode: 'execution-failed' }
+  }
+}
+
+/** Read a provider status using a transaction identifier retained from the source receipt. */
+export async function pollSquidStatus(
+  request: SquidStatusRequest,
+  options: SquidProviderOptions
+): Promise<SquidStatusResult> {
+  if (!options.integratorId) throw providerError('Token acquisition requires SQUID_INTEGRATOR_ID')
+  const fetchFn = options.fetchFn ?? fetch
+  const params = new URLSearchParams({
+    transactionId: request.transactionId,
+    fromChainId: request.fromChainId,
+    toChainId: request.toChainId,
+    quoteId: request.quoteId,
+  })
+  if (request.requestId != null) params.set('requestId', request.requestId)
+  const response = await squidFetch(
+    `${SQUID_API_URL}/status?${params.toString()}`,
+    { headers: { 'x-integrator-id': options.integratorId } },
+    fetchFn
+  )
+  if (!response.ok) throw providerError(`Squid status request failed (${response.status})`)
+  const parsed = (await response.json()) as SquidStatusResponse
+  return {
+    ...mapSquidStatus(parsed.squidTransactionStatus),
+    ...(parsed.fromChain?.transactionUrl != null ? { sourceTransactionUrl: parsed.fromChain.transactionUrl } : {}),
+    ...(parsed.toChain?.transactionId != null ? { destinationTransactionHash: parsed.toChain.transactionId } : {}),
+    ...(parsed.toChain?.transactionUrl != null ? { destinationTransactionUrl: parsed.toChain.transactionUrl } : {}),
+    ...(parsed.axelarTransactionUrl != null ? { providerExplorerUrl: parsed.axelarTransactionUrl } : {}),
+  }
+}
+
+/** Bounded polling never promotes an unresolved provider route to success. */
+export async function waitForSquidTerminalStatus(options: {
+  getStatus: () => Promise<{ status: AcquisitionExecutionStatus; errorCode?: AcquisitionErrorCode }>
+  estimatedRouteDurationSeconds?: number
+  now?: () => number
+  wait?: (milliseconds: number) => Promise<void>
+}): Promise<{ status: AcquisitionExecutionStatus; errorCode?: AcquisitionErrorCode }> {
+  const now = options.now ?? Date.now
+  const wait = options.wait ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)))
+  const start = now()
+  const timeout = Math.max(15 * 60_000, (options.estimatedRouteDurationSeconds ?? 0) * 2_000)
+  let current: { status: AcquisitionExecutionStatus; errorCode?: AcquisitionErrorCode } = {
+    status: 'submitted',
+    errorCode: 'timed-out',
+  }
+  while (now() <= start + timeout) {
+    current = await options.getStatus()
+    if (current.status !== 'submitted') return current
+    const remaining = start + timeout - now()
+    if (remaining <= 0) break
+    const cadence = now() - start < 2 * 60_000 ? 5_000 : 15_000
+    await wait(Math.min(cadence, remaining))
+  }
+  return current
+}

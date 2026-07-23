@@ -89,6 +89,37 @@ export function addAuthOptions(command: Command): Command {
   )
 }
 
+/** Parse the bounded quote slippage accepted by the first acquisition route. */
+export function parseSlippageOption(value: string): number {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 5) {
+    throw new InvalidArgumentError('Slippage must be greater than 0 and no more than 5 percent.')
+  }
+  return parsed
+}
+
+/** Validate a positive display amount without choosing a token's decimals here. */
+export function parsePositiveTokenAmount(value: string): string {
+  if (!/^\d+(?:\.\d+)?$/.test(value) || Number(value) <= 0) {
+    throw new InvalidArgumentError('Amount must be a positive decimal value.')
+  }
+  return value
+}
+
+/** Add the deliberately narrow source-token controls used by payments fund. */
+export function addFundingSourceOptions(command: Command): Command {
+  return command
+    .option('--from-chain <chain>', 'Source chain for acquisition (currently: arb)')
+    .option('--from-token <token>', 'Source token for acquisition (currently: USDC)')
+    .option(
+      '--max-source-amount <amount>',
+      'Hard maximum source-token spend (required for acquisition)',
+      parsePositiveTokenAmount
+    )
+    .addOption(new Option('--source-rpc-url <url>', 'Source-chain RPC endpoint').env('SOURCE_RPC_URL'))
+    .option('--slippage <percent>', 'Maximum quote slippage percent (default: 1)', parseSlippageOption)
+}
+
 /**
  * Commander arg parser that accumulates repeated option values into an array.
  */

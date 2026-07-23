@@ -1,0 +1,169 @@
+import { mainnet } from '../../synapse/index.js'
+import { MIN_FIL_FOR_GAS } from '../constants.js'
+import { planWalletFunding } from '../wallet-funding.js'
+import { acquireAcquisitionLock, createAcquisitionCheckpointStore } from './checkpoint.js'
+import { executeTokenAcquisition, sourceAddressForPrivateKey, waitForFilecoinWalletReadiness } from './execute.js'
+import {
+  parseMaximumSourceAmount,
+  planTokenAcquisition,
+  totalSourceAmount,
+  validateMaximumSourceSpend,
+} from './plan.js'
+import { resolveSourceToken } from './source-assets.js'
+import { pollSquidStatus, type SquidProviderOptions } from './squid.js'
+import type { AcquisitionEvidence } from './types.js'
+
+function consumedSourceAmount(evidence: AcquisitionEvidence[]): bigint {
+  return evidence.reduce((total, item) => {
+    if (item.sourceAmount == null || !/^\d+$/.test(item.sourceAmount)) {
+      throw new Error('Acquisition recovery state lacks a valid consumed source amount; do not submit another route')
+    }
+    return total + BigInt(item.sourceAmount)
+  }, 0n)
+}
+
+export interface EnsureWalletReadyOptions {
+  /** Resolved destination chain id, never a requested CLI network label. */
+  destinationChainId: number
+  walletUsdfcBalance: bigint
+  walletFilBalance: bigint
+  requiredUsdfc: bigint
+  fromChain?: string | undefined
+  fromToken?: string | undefined
+  maxSourceAmount?: string | undefined
+  sourceRpcUrl?: string | undefined
+  slippage?: number | undefined
+  privateKey?: string | undefined
+  provider: SquidProviderOptions
+  /** Called after routes are validated and before any source approval or signature. */
+  confirmSourceAcquisition?: ((summary: SourceAcquisitionConfirmation) => Promise<void>) | undefined
+  rereadWalletBalances: () => Promise<{ fil: bigint; usdfc: bigint }>
+}
+
+/** Safe-to-display source-route facts; it intentionally excludes calldata and provider credentials. */
+export interface SourceAcquisitionConfirmation {
+  sourceAmount: bigint
+  maxSourceAmount: bigint
+  legs: Array<{ asset: 'fil' | 'usdfc'; minimumDestinationAmount: bigint; expiresAt: number }>
+}
+
+/** Ensure only the exact wallet deficits are acquired before the existing deposit path continues. */
+export async function ensureWalletReadyForFilecoinTransactions(
+  options: EnsureWalletReadyOptions
+): Promise<AcquisitionEvidence[]> {
+  const source = resolveSourceToken(options.fromChain, options.fromToken)
+  const plan = planWalletFunding({
+    requiredUsdfc: options.requiredUsdfc,
+    walletUsdfcBalance: options.walletUsdfcBalance,
+    requiredFilReserve: MIN_FIL_FOR_GAS,
+    walletFilBalance: options.walletFilBalance,
+    ...(source != null ? { source } : {}),
+  })
+  if (plan.path === 'ready') return []
+  if (options.destinationChainId !== mainnet.id) {
+    throw new Error(
+      'Token acquisition is available only on Filecoin mainnet; use a direct USDFC deposit on this network'
+    )
+  }
+  if (options.maxSourceAmount == null || source == null || options.privateKey == null) {
+    throw new Error(
+      'Underfunded wallet: specify --from-chain arb --from-token USDC --max-source-amount and an owner private key'
+    )
+  }
+  const privateKey = (
+    options.privateKey.startsWith('0x') ? options.privateKey : `0x${options.privateKey}`
+  ) as `0x${string}`
+  const sourceOwner = sourceAddressForPrivateKey(privateKey)
+  const lock = await acquireAcquisitionLock(sourceOwner)
+  const checkpointStore = createAcquisitionCheckpointStore(sourceOwner)
+  try {
+    const pending = await checkpointStore.load()
+    const maximumSourceAmount = parseMaximumSourceAmount(options.maxSourceAmount) as bigint
+    const completedAssets = new Set(pending?.evidence.map((item) => item.asset) ?? [])
+    const remainingPlan = { ...plan, legs: plan.legs.filter((leg) => !completedAssets.has(leg.asset)) }
+    const needsRoutePlanning =
+      pending == null ||
+      (pending.evidence.length === 0 && pending.approvalIntent == null && pending.routeIntent == null) ||
+      remainingPlan.legs.length > 0
+    const priorSourceAmount =
+      needsRoutePlanning && pending != null && pending.evidence.length > 0 ? consumedSourceAmount(pending.evidence) : 0n
+    if (priorSourceAmount > maximumSourceAmount) {
+      throw new Error('Acquisition recovery state exceeds --max-source-amount; do not submit another route')
+    }
+    const quotes = needsRoutePlanning
+      ? await planTokenAcquisition({
+          plan: remainingPlan,
+          owner: sourceOwner,
+          maxSourceAmount: maximumSourceAmount - priorSourceAmount,
+          slippage: options.slippage ?? 1,
+          provider: options.provider,
+        })
+      : []
+    if (needsRoutePlanning) {
+      validateMaximumSourceSpend({
+        quotes,
+        maxSourceAmount: maximumSourceAmount - priorSourceAmount,
+        maxNativeGas: 100_000_000_000_000n,
+      })
+      if (pending == null && quotes.length > 0) {
+        await options.confirmSourceAcquisition?.({
+          sourceAmount: totalSourceAmount(quotes),
+          maxSourceAmount: parseMaximumSourceAmount(options.maxSourceAmount) as bigint,
+          legs: quotes.map((quote) => ({
+            asset: quote.asset,
+            minimumDestinationAmount: quote.destinationAmount,
+            expiresAt: quote.expiresAt,
+          })),
+        })
+      }
+    }
+    const evidence = await executeTokenAcquisition({
+      privateKey,
+      sourceRpcUrl: options.sourceRpcUrl,
+      quotes,
+      maxSourceAmount: maximumSourceAmount,
+      refreshQuote: async (quote) => {
+        const leg = plan.legs.find((candidate) => candidate.asset === quote.asset)
+        if (leg == null) throw new Error('Acquisition quote does not match a planned wallet shortfall')
+        const refreshed = await planTokenAcquisition({
+          plan: { ...plan, legs: [leg] },
+          owner: sourceAddressForPrivateKey(privateKey),
+          maxSourceAmount: quote.sourceAmount,
+          slippage: options.slippage ?? 1,
+          provider: options.provider,
+          initialSourceAmount: quote.sourceAmount,
+        })
+        const current = refreshed[0]
+        if (current == null) throw new Error('Squid route refresh returned no route')
+        return current
+      },
+      getProviderStatus: async (current) => {
+        if (current.sourceTransactionHash == null) {
+          throw new Error('Acquisition evidence has no source transaction hash; do not resubmit the source route')
+        }
+        return pollSquidStatus(
+          {
+            transactionId: current.sourceTransactionHash,
+            fromChainId: '42161',
+            toChainId: String(options.destinationChainId),
+            quoteId: current.quoteId,
+            ...(current.requestId != null ? { requestId: current.requestId } : {}),
+          },
+          options.provider
+        )
+      },
+      checkpointStore,
+      destinationChainId: options.destinationChainId,
+      getFilecoinBalances: options.rereadWalletBalances,
+      waitForFilecoinArrival: async (required) =>
+        waitForFilecoinWalletReadiness({ required, getBalances: options.rereadWalletBalances }),
+    })
+    await waitForFilecoinWalletReadiness({
+      required: { fil: MIN_FIL_FOR_GAS, usdfc: options.requiredUsdfc },
+      getBalances: options.rereadWalletBalances,
+    })
+    return evidence
+  } finally {
+    await lock.release()
+  }
+}

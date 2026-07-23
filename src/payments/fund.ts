@@ -7,21 +7,25 @@
 import { confirm, isCancel } from '@clack/prompts'
 import type { Synapse } from '@filoz/synapse-sdk'
 import pc from 'picocolors'
-import { parseUnits } from 'viem'
+import { formatUnits, parseUnits } from 'viem'
 import { CliFatal, CliIncomplete, isCliFatal, isCliIncomplete, setIncompleteExitCode } from '../common/cli-errors.js'
 import { MIN_RUNWAY_DAYS } from '../common/constants.js'
 import { resolveIpfsIndexedMetadata } from '../core/metadata/index.js'
+import { ensureWalletReadyForFilecoinTransactions } from '../core/payments/acquisition/orchestrate.js'
+import type { AcquisitionEvidence } from '../core/payments/acquisition/types.js'
 import {
   checkUSDFCBalance,
   clampDepositToLimit,
   DEFAULT_LOCKUP_DAYS,
   depositUSDFC,
   executeFilecoinPayFunding,
+  getPaymentStatus,
+  MIN_FIL_FOR_GAS,
   planFilecoinPayFunding,
   toStorageRunwaySummary,
   withdrawUSDFC,
 } from '../core/payments/index.js'
-import { initializeSynapse } from '../core/synapse/index.js'
+import { initializeSynapse, mainnet } from '../core/synapse/index.js'
 import { formatUSDFC } from '../core/utils/format.js'
 import { formatRunwaySummary } from '../core/utils/index.js'
 import { getCLILogger, parseCLIAuth } from '../utils/cli-auth.js'
@@ -58,6 +62,80 @@ async function ensureBelowThirtyDaysAllowed(opts: {
   if (isCancel(proceed) || !proceed) {
     throw new CliIncomplete('Fund adjustment cancelled by user')
   }
+}
+
+function shellQuote(value: string | number): string {
+  return `'${String(value).replaceAll("'", "'\\\"'\\\"'")}'`
+}
+
+function acquisitionRecoveryCommand(options: FundOptions, hasDays: boolean): string {
+  const argumentsList = [
+    'filecoin-pin',
+    'payments',
+    'fund',
+    hasDays ? '--days' : '--amount',
+    hasDays ? String(options.days) : String(options.amount),
+    '--from-chain',
+    String(options.fromChain),
+    '--from-token',
+    String(options.fromToken),
+    '--max-source-amount',
+    String(options.maxSourceAmount),
+  ]
+  // Endpoint values are credentials in practice and must never be echoed into terminal history or logs.
+  if (options.network != null) argumentsList.push('--network', options.network)
+  if (options.mode != null) argumentsList.push('--mode', options.mode)
+  if (options.slippage != null) argumentsList.push('--slippage', String(options.slippage))
+  return argumentsList.map(shellQuote).join(' ')
+}
+
+function acquisitionRecoveryNote(): string {
+  return 'Before resuming, supply SOURCE_RPC_URL and RPC_URL through the environment or CLI flags. Endpoint URLs are intentionally omitted from this command.'
+}
+
+function directDepositRecoveryCommand(options: FundOptions, hasDays: boolean): string {
+  const argumentsList = [
+    'filecoin-pin',
+    'payments',
+    'fund',
+    hasDays ? '--days' : '--amount',
+    hasDays ? String(options.days) : String(options.amount),
+  ]
+  if (options.network != null) argumentsList.push('--network', options.network)
+  if (options.mode != null) argumentsList.push('--mode', options.mode)
+  return argumentsList.map(shellQuote).join(' ')
+}
+
+function directDepositRecoveryNote(): string {
+  return 'Acquisition is confirmed: FIL and USDFC are already in the Filecoin wallet. Retry only the Filecoin Pay deposit; do not rerun source acquisition. Supply RPC_URL through the environment or CLI flag if needed.'
+}
+
+function directFundingRecoveryNote(): string {
+  return 'Token acquisition is available only on Filecoin mainnet. Fund this wallet with FIL and USDFC directly, then retry only the Filecoin Pay deposit without --from-* acquisition flags. Supply RPC_URL through the environment or CLI flag if needed.'
+}
+
+/** RPC failures can include endpoint URLs (and embedded API keys) in viem's message fields. */
+function sanitizeRpcErrorMessage(message: string, options: FundOptions): string {
+  let sanitized = message
+  for (const endpoint of [options.sourceRpcUrl, options.rpcUrl]) {
+    if (endpoint != null && endpoint !== '') sanitized = sanitized.replaceAll(endpoint, '[redacted RPC URL]')
+  }
+  return sanitized.replace(/\b(?:https?|wss?):\/\/[^\s'"`<>]+/giu, '[redacted RPC URL]')
+}
+
+function acquisitionEvidenceLines(evidence: AcquisitionEvidence[]): string[] {
+  return evidence.map((item) => {
+    const fields = [
+      `${item.asset.toUpperCase()} status ${item.status}`,
+      `quote ${item.quoteId}`,
+      ...(item.requestId != null ? [`request ${item.requestId}`] : []),
+      ...(item.sourceTransactionHash != null ? [`source ${item.sourceTransactionHash}`] : []),
+      ...(item.destinationTransactionHash != null ? [`destination ${item.destinationTransactionHash}`] : []),
+      ...(item.providerExplorerUrl != null ? [`provider ${item.providerExplorerUrl}`] : []),
+      ...(item.destinationTransactionUrl != null ? [`destination explorer ${item.destinationTransactionUrl}`] : []),
+    ]
+    return fields.join(' | ')
+  })
 }
 
 // Helper: perform deposit or withdraw according to delta
@@ -228,6 +306,9 @@ export async function autoFund(options: AutoFundOptions): Promise<FundingAdjustm
 export async function runFund(options: FundOptions): Promise<void> {
   intro(pc.bold('Filecoin Onchain Cloud Fund Adjustment'))
   const spinner = createSpinner()
+  let acquisitionDiagnostics: string | undefined
+  let acquisitionResumeCommand: string | undefined
+  let acquisitionRecoveryKind: 'await-provider' | 'deposit-only' | 'direct-funding' | undefined
 
   // Validate inputs
   const hasDays = options.days != null
@@ -241,6 +322,15 @@ export async function runFund(options: FundOptions): Promise<void> {
     log.line(pc.red(`Error: Invalid mode (must be "exact" or "minimum"), received: '${options.mode}'`))
     log.flush()
     throw new CliFatal(`Invalid mode (must be "exact" or "minimum"), received: '${options.mode}'`)
+  }
+  const sourceOptionCount = [options.fromChain, options.fromToken, options.maxSourceAmount].filter(
+    (value) => value != null
+  ).length
+  if (sourceOptionCount > 0 && sourceOptionCount !== 3) {
+    throw new CliFatal('Acquisition requires --from-chain, --from-token, and --max-source-amount together')
+  }
+  if ((options.sourceRpcUrl != null || options.slippage != null) && sourceOptionCount !== 3) {
+    throw new CliFatal('Acquisition requires --from-chain, --from-token, and --max-source-amount together')
   }
 
   spinner.start('Connecting...')
@@ -266,12 +356,18 @@ export async function runFund(options: FundOptions): Promise<void> {
     }
 
     spinner.start('Calculating funding plan...')
+    const acquisitionRequested =
+      options.fromChain != null ||
+      options.fromToken != null ||
+      options.maxSourceAmount != null ||
+      options.sourceRpcUrl != null
     const planResult = await planFilecoinPayFunding({
       synapse,
       targetRunwayDays: hasDays ? targetDays : undefined,
       targetDeposit: hasAmount ? targetDeposit : undefined,
       mode: options.mode ?? 'exact',
       allowWithdraw: options.mode !== 'minimum',
+      validateWalletReadiness: !acquisitionRequested,
     })
     const { plan } = planResult
     spinner.stop(`${pc.green('✓')} Funding plan prepared`)
@@ -339,7 +435,68 @@ export async function runFund(options: FundOptions): Promise<void> {
       return
     }
 
-    if (plan.walletShortfall != null && plan.walletShortfall > 0n) {
+    if (plan.delta > 0n && (acquisitionRequested || plan.walletShortfall != null)) {
+      if (acquisitionRequested) {
+        const filShortfall =
+          planResult.status.filBalance < MIN_FIL_FOR_GAS ? MIN_FIL_FOR_GAS - planResult.status.filBalance : 0n
+        const usdfcShortfall =
+          planResult.status.walletUsdfcBalance < plan.delta ? plan.delta - planResult.status.walletUsdfcBalance : 0n
+        acquisitionDiagnostics = `Remaining wallet shortfalls: FIL ${formatUnits(filShortfall, 18)}, USDFC ${formatUnits(usdfcShortfall, 18)}. Squid fallback: https://app.squidrouter.com/`
+        acquisitionResumeCommand = acquisitionRecoveryCommand(options, hasDays)
+        acquisitionRecoveryKind = 'await-provider'
+        if (synapse.chain.id !== mainnet.id) {
+          acquisitionDiagnostics =
+            'Direct wallet funding is required on this network: add FIL and USDFC, then retry the Filecoin Pay deposit without source acquisition.'
+          acquisitionResumeCommand = directDepositRecoveryCommand(options, hasDays)
+          acquisitionRecoveryKind = 'direct-funding'
+        }
+      }
+      const completedAcquisition = await ensureWalletReadyForFilecoinTransactions({
+        destinationChainId: synapse.chain.id,
+        walletUsdfcBalance: planResult.status.walletUsdfcBalance,
+        walletFilBalance: planResult.status.filBalance,
+        requiredUsdfc: plan.delta,
+        fromChain: options.fromChain,
+        fromToken: options.fromToken,
+        maxSourceAmount: options.maxSourceAmount,
+        sourceRpcUrl: options.sourceRpcUrl,
+        slippage: options.slippage,
+        privateKey: options.privateKey,
+        provider: { integratorId: process.env.SQUID_INTEGRATOR_ID },
+        confirmSourceAcquisition: isTTY()
+          ? async (summary) => {
+              if (summary.sourceAmount > summary.maxSourceAmount) {
+                throw new Error('Validated source route exceeds --max-source-amount before confirmation')
+              }
+              const routeLegs = summary.legs
+                .map(
+                  (leg) =>
+                    `${formatUnits(leg.minimumDestinationAmount, 18)} ${leg.asset.toUpperCase()} (expires ${new Date(leg.expiresAt * 1_000).toISOString()})`
+                )
+                .join(', ')
+              const proceed = await confirm({
+                message: `Acquire ${formatUnits(summary.sourceAmount, 6)} Arbitrum USDC (cap ${formatUnits(summary.maxSourceAmount, 6)}) for ${routeLegs} before depositing ${formatUSDFC(plan.delta)} USDFC?`,
+                initialValue: false,
+              })
+              if (isCancel(proceed) || !proceed) throw new CliIncomplete('Source acquisition cancelled by user')
+            }
+          : undefined,
+        rereadWalletBalances: async () => {
+          const status = await getPaymentStatus(synapse)
+          return { fil: status.filBalance, usdfc: status.walletUsdfcBalance }
+        },
+      })
+      const acquisitionEvidence = completedAcquisition ?? []
+      if (acquisitionEvidence.length > 0) {
+        log.section('Acquisition evidence', acquisitionEvidenceLines(acquisitionEvidence))
+        acquisitionDiagnostics =
+          'Acquisition is confirmed: FIL and USDFC are already in the Filecoin wallet. The Filecoin Pay deposit can be retried without another source acquisition.'
+        acquisitionResumeCommand = directDepositRecoveryCommand(options, hasDays)
+        acquisitionRecoveryKind = 'deposit-only'
+      }
+    }
+
+    if (plan.walletShortfall != null && plan.walletShortfall > 0n && !acquisitionRequested) {
       throw new Error(
         `Insufficient USDFC in wallet (need ${formatUSDFC(plan.delta)} USDFC, have ${formatUSDFC(planResult.status.walletUsdfcBalance)} USDFC)`
       )
@@ -366,9 +523,25 @@ export async function runFund(options: FundOptions): Promise<void> {
       spinner.stop()
       throw error
     }
-    const msg = error instanceof Error ? error.message : String(error)
+    const message = sanitizeRpcErrorMessage(error instanceof Error ? error.message : String(error), options)
+    const msg = acquisitionDiagnostics == null ? message : `${message}\n${acquisitionDiagnostics}`
     spinner.stop(`${pc.red('✗')} Fund adjustment failed: ${msg}`)
+    if (acquisitionResumeCommand != null) {
+      const resumePrefix =
+        acquisitionRecoveryKind === 'direct-funding'
+          ? 'After direct wallet funding, resume with'
+          : 'After provider arrival or a deposit failure, resume with'
+      const recoveryNote =
+        acquisitionRecoveryKind === 'direct-funding'
+          ? directFundingRecoveryNote()
+          : acquisitionRecoveryKind === 'deposit-only'
+            ? directDepositRecoveryNote()
+            : acquisitionRecoveryNote()
+      log.line(pc.yellow(`${resumePrefix}: ${acquisitionResumeCommand}`))
+      log.line(pc.yellow(recoveryNote))
+      log.flush()
+    }
     cancel('Fund adjustment failed')
-    throw new CliFatal(msg, { cause: error instanceof Error ? error : undefined })
+    throw new CliFatal(msg)
   }
 }

@@ -1,13 +1,29 @@
+import { calibration } from '@filoz/synapse-sdk'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { runFund } from '../../payments/fund.js'
 
-const { mockConfirm, mockIsCancel, mockCancel, mockPlan, mockDeposit, mockWithdraw } = vi.hoisted(() => ({
+const {
+  mockConfirm,
+  mockIsCancel,
+  mockCancel,
+  mockLogLine,
+  mockLogSection,
+  mockPlan,
+  mockDeposit,
+  mockWithdraw,
+  mockInitialize,
+  mockEnsureWallet,
+} = vi.hoisted(() => ({
   mockConfirm: vi.fn(),
   mockIsCancel: vi.fn(() => false),
   mockCancel: vi.fn(),
+  mockLogLine: vi.fn(),
+  mockLogSection: vi.fn(),
   mockPlan: vi.fn(),
   mockDeposit: vi.fn(),
   mockWithdraw: vi.fn(),
+  mockInitialize: vi.fn(async () => ({ chain: { id: 314 } })),
+  mockEnsureWallet: vi.fn(),
 }))
 
 vi.mock('@clack/prompts', () => ({
@@ -15,7 +31,11 @@ vi.mock('@clack/prompts', () => ({
   isCancel: mockIsCancel,
 }))
 vi.mock('../../core/synapse/index.js', () => ({
-  initializeSynapse: vi.fn(async () => ({})),
+  initializeSynapse: mockInitialize,
+  mainnet: { id: 314 },
+}))
+vi.mock('../../core/payments/acquisition/orchestrate.js', () => ({
+  ensureWalletReadyForFilecoinTransactions: mockEnsureWallet,
 }))
 vi.mock('../../utils/cli-auth.js', () => ({
   parseCLIAuth: vi.fn(() => ({})),
@@ -30,10 +50,11 @@ vi.mock('../../utils/cli-helpers.js', () => ({
 }))
 vi.mock('../../utils/cli-logger.js', () => ({
   isTTY: vi.fn(() => true),
-  log: { line: vi.fn(), indent: vi.fn(), flush: vi.fn() },
+  log: { line: mockLogLine, section: mockLogSection, indent: vi.fn(), flush: vi.fn() },
 }))
 vi.mock('../../core/payments/index.js', () => ({
   DEFAULT_LOCKUP_DAYS: 30,
+  MIN_FIL_FOR_GAS: 100_000_000_000_000_000n,
   planFilecoinPayFunding: mockPlan,
   checkUSDFCBalance: vi.fn(async () => 1_000_000_000_000_000_000_000n),
   depositUSDFC: mockDeposit,
@@ -60,7 +81,7 @@ function planResult(delta: bigint) {
       projected: { runway: { state: 'active', runwayDays: 60 } },
       current: { runway: { rateUsed: 1n } },
     },
-    status: { walletUsdfcBalance: 1_000_000_000_000_000_000_000n },
+    status: { walletUsdfcBalance: 1_000_000_000_000_000_000_000n, filBalance: 1_000_000_000_000_000_000n },
   }
 }
 
@@ -68,6 +89,8 @@ describe('runFund confirmation exit codes', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockIsCancel.mockReturnValue(false)
+    mockInitialize.mockResolvedValue({ chain: { id: 314 } })
+    mockEnsureWallet.mockResolvedValue(undefined)
     process.exitCode = 0
   })
 
@@ -113,5 +136,238 @@ describe('runFund confirmation exit codes', () => {
     await runFund({ amount: '5' })
 
     expect(process.exitCode).toBe(1)
+  })
+
+  it('passes the RPC-resolved Calibration chain to acquisition even without --network', async () => {
+    mockInitialize.mockResolvedValueOnce({ chain: { id: calibration.id } })
+    mockPlan.mockResolvedValueOnce(planResult(5_000_000_000_000_000_000n))
+    mockConfirm.mockResolvedValueOnce(false)
+
+    await runFund({
+      amount: '5',
+      rpcUrl: 'https://calibration.example/rpc',
+      fromChain: 'arb',
+      fromToken: 'USDC',
+      maxSourceAmount: '10',
+      sourceRpcUrl: 'https://arbitrum.example/rpc',
+      privateKey: '0x0000000000000000000000000000000000000000000000000000000000000001',
+    })
+
+    expect(mockEnsureWallet).toHaveBeenCalledWith(expect.objectContaining({ destinationChainId: calibration.id }))
+  })
+
+  it('exits with code 2 when an interactive source acquisition is declined before execution', async () => {
+    mockPlan.mockResolvedValueOnce(planResult(5_000_000_000_000_000_000n))
+    mockEnsureWallet.mockImplementationOnce(
+      async (options: {
+        confirmSourceAcquisition?: (summary: {
+          sourceAmount: bigint
+          maxSourceAmount: bigint
+          legs: Array<{ asset: 'fil' | 'usdfc'; minimumDestinationAmount: bigint; expiresAt: number }>
+        }) => Promise<void>
+      }) => {
+        if (options.confirmSourceAcquisition == null)
+          throw new Error('expected source acquisition confirmation callback')
+        await options.confirmSourceAcquisition({
+          sourceAmount: 1_000_000n,
+          maxSourceAmount: 10_000_000n,
+          legs: [{ asset: 'usdfc', minimumDestinationAmount: 1_000_000_000_000_000_000n, expiresAt: 2_000_000_000 }],
+        })
+      }
+    )
+    mockConfirm.mockResolvedValueOnce(false)
+
+    await runFund({
+      amount: '5',
+      fromChain: 'arb',
+      fromToken: 'USDC',
+      maxSourceAmount: '10',
+      sourceRpcUrl: 'https://arbitrum.example/rpc',
+      privateKey: '0x0000000000000000000000000000000000000000000000000000000000000001',
+    })
+
+    expect(mockEnsureWallet).toHaveBeenCalledTimes(1)
+    expect(mockConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('1 Arbitrum USDC (cap 10)') })
+    )
+    expect(mockDeposit).not.toHaveBeenCalled()
+    expect(mockCancel).toHaveBeenCalledWith('Source acquisition cancelled by user')
+    expect(process.exitCode).toBe(2)
+  })
+
+  it('reports exact shortfalls, a sanitized fallback, and a repeatable resume command after acquisition failure', async () => {
+    const planned = planResult(5_000_000_000_000_000_000n)
+    planned.status = { walletUsdfcBalance: 0n, filBalance: 0n }
+    mockPlan.mockResolvedValueOnce(planned)
+    mockEnsureWallet.mockRejectedValueOnce(new Error('Squid quote failed (429)'))
+
+    await expect(
+      runFund({
+        amount: '5',
+        fromChain: 'arb',
+        fromToken: 'USDC',
+        maxSourceAmount: '10',
+        sourceRpcUrl: 'https://arbitrum.example/rpc',
+        rpcUrl: 'https://filecoin.example/rpc',
+        mode: 'minimum',
+        slippage: 1,
+        privateKey: '0x0000000000000000000000000000000000000000000000000000000000000001',
+      })
+    ).rejects.toThrow('Remaining wallet shortfalls: FIL 0.1, USDFC 5. Squid fallback: https://app.squidrouter.com/')
+    expect(mockLogLine).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "'filecoin-pin' 'payments' 'fund' '--amount' '5' '--from-chain' 'arb' '--from-token' 'USDC' '--max-source-amount' '10' '--mode' 'minimum' '--slippage' '1'"
+      )
+    )
+    expect(mockLogLine).toHaveBeenCalledWith(expect.stringContaining('SOURCE_RPC_URL and RPC_URL'))
+    expect(mockLogLine.mock.calls.flat().join('\n')).not.toContain('https://arbitrum.example/rpc')
+    expect(mockLogLine.mock.calls.flat().join('\n')).not.toContain('https://filecoin.example/rpc')
+  })
+
+  it.each([
+    ['Calibration', calibration.id, 'calibration'],
+    ['devnet', 31_337, 'devnet'],
+  ])('fails closed for %s acquisition with direct-funding recovery only', async (_networkName, destinationChainId, network) => {
+    const planned = planResult(5_000_000_000_000_000_000n)
+    planned.status = { walletUsdfcBalance: 0n, filBalance: 0n }
+    mockInitialize.mockResolvedValueOnce({ chain: { id: destinationChainId } })
+    mockPlan.mockResolvedValueOnce(planned)
+    mockEnsureWallet.mockRejectedValueOnce(
+      new Error('Token acquisition is available only on Filecoin mainnet; use a direct USDFC deposit on this network')
+    )
+
+    await expect(
+      runFund({
+        amount: '5',
+        network,
+        fromChain: 'arb',
+        fromToken: 'USDC',
+        maxSourceAmount: '10',
+        sourceRpcUrl: 'https://arbitrum.example/rpc',
+        privateKey: '0x0000000000000000000000000000000000000000000000000000000000000001',
+      })
+    ).rejects.toThrow('Direct wallet funding is required on this network')
+
+    const output = mockLogLine.mock.calls.flat().join('\n')
+    expect(output).toContain('After direct wallet funding, resume with:')
+    expect(output).toContain('Fund this wallet with FIL and USDFC directly')
+    expect(output).toContain(`'--network' '${network}'`)
+    expect(output).not.toContain('After provider arrival')
+    expect(output).not.toContain('--from-chain')
+    expect(output).not.toContain('--from-token')
+    expect(output).not.toContain('--max-source-amount')
+    expect(output).not.toContain('SOURCE_RPC_URL')
+    expect(output).not.toContain('Squid fallback')
+  })
+
+  it('redacts keyed source and Filecoin RPC URLs from viem-style errors and CliFatal', async () => {
+    const sourceRpcUrl = 'https://arbitrum.example/rpc?apiKey=source-secret'
+    const rpcUrl = 'https://filecoin.example/rpc?token=filecoin-secret'
+    const planned = planResult(5_000_000_000_000_000_000n)
+    planned.status = { walletUsdfcBalance: 0n, filBalance: 0n }
+    mockPlan.mockResolvedValueOnce(planned)
+    mockEnsureWallet.mockRejectedValueOnce(
+      new Error(`HTTP 429 from viem\nURL: ${sourceRpcUrl}\nRequest URL: ${rpcUrl}`)
+    )
+
+    const failure = await runFund({
+      amount: '5',
+      fromChain: 'arb',
+      fromToken: 'USDC',
+      maxSourceAmount: '10',
+      sourceRpcUrl,
+      rpcUrl,
+      privateKey: '0x0000000000000000000000000000000000000000000000000000000000000001',
+    }).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(Error)
+    expect((failure as Error).message).toContain('HTTP 429 from viem')
+    expect((failure as Error).message).not.toContain(sourceRpcUrl)
+    expect((failure as Error).message).not.toContain(rpcUrl)
+    expect((failure as Error).cause).toBeUndefined()
+
+    const output = mockLogLine.mock.calls.flat().join('\n')
+    expect(output).not.toContain(sourceRpcUrl)
+    expect(output).not.toContain(rpcUrl)
+    expect(output).not.toContain('source-secret')
+    expect(output).not.toContain('filecoin-secret')
+  })
+
+  it('prints sanitized confirmed acquisition evidence before the existing Filecoin Pay deposit confirmation', async () => {
+    mockPlan.mockResolvedValueOnce(planResult(5_000_000_000_000_000_000n))
+    mockEnsureWallet.mockResolvedValueOnce([
+      {
+        asset: 'usdfc',
+        quoteId: 'quote-1',
+        requestId: 'request-1',
+        sourceTransactionHash: '0xsource',
+        destinationTransactionHash: '0xdestination',
+        providerExplorerUrl: 'https://axelarscan.io/gmp/source',
+        status: 'confirmed',
+      },
+    ])
+    mockConfirm.mockResolvedValueOnce(false)
+
+    await runFund({
+      amount: '5',
+      fromChain: 'arb',
+      fromToken: 'USDC',
+      maxSourceAmount: '10',
+      sourceRpcUrl: 'https://arbitrum.example/rpc',
+      privateKey: '0x0000000000000000000000000000000000000000000000000000000000000001',
+    })
+
+    expect(mockLogSection).toHaveBeenCalledWith(
+      'Acquisition evidence',
+      expect.arrayContaining([
+        expect.stringContaining('quote quote-1'),
+        expect.stringContaining('source 0xsource'),
+        expect.stringContaining('destination 0xdestination'),
+      ])
+    )
+  })
+
+  it('reports confirmed Filecoin wallet assets and a direct deposit-only resume after deposit failure', async () => {
+    mockPlan.mockResolvedValueOnce(planResult(5_000_000_000_000_000_000n))
+    mockEnsureWallet.mockResolvedValueOnce([
+      {
+        asset: 'usdfc',
+        quoteId: 'quote-1',
+        sourceTransactionHash: '0xsource',
+        status: 'confirmed',
+      },
+    ])
+    mockConfirm.mockResolvedValueOnce(true)
+    mockDeposit.mockRejectedValueOnce(new Error('Filecoin Pay deposit rejected'))
+
+    await expect(
+      runFund({
+        amount: '5',
+        fromChain: 'arb',
+        fromToken: 'USDC',
+        maxSourceAmount: '10',
+        sourceRpcUrl: 'https://arbitrum.example/rpc',
+        rpcUrl: 'https://filecoin.example/rpc',
+        mode: 'minimum',
+        slippage: 1,
+        privateKey: '0x0000000000000000000000000000000000000000000000000000000000000001',
+      })
+    ).rejects.toThrow('FIL and USDFC are already in the Filecoin wallet')
+
+    const output = mockLogLine.mock.calls.flat().join('\n')
+    expect(output).toContain("'filecoin-pin' 'payments' 'fund' '--amount' '5' '--mode' 'minimum'")
+    expect(output).toContain('Retry only the Filecoin Pay deposit; do not rerun source acquisition')
+    expect(output).not.toContain('--from-chain')
+    expect(output).not.toContain('--from-token')
+    expect(output).not.toContain('--max-source-amount')
+    expect(output).not.toContain('--source-rpc-url')
+    expect(output).not.toContain('https://arbitrum.example/rpc')
+    expect(output).not.toContain('https://filecoin.example/rpc')
+  })
+
+  it('rejects --slippage unless the complete acquisition tuple is present', async () => {
+    await expect(runFund({ amount: '5', slippage: 1 })).rejects.toThrow(
+      'Acquisition requires --from-chain, --from-token, and --max-source-amount together'
+    )
+    expect(mockInitialize).not.toHaveBeenCalled()
   })
 })
