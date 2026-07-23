@@ -51,10 +51,13 @@ import { padSizeToPDPLeaves } from './utils.js'
 export { getPriceList } from '@filoz/synapse-core/warm-storage'
 // Re-export all constants
 export * from './constants.js'
+export * from './acquisition/provider.js'
+export * from './acquisition/types.js'
 export * from './funding.js'
 export * from './runway.js'
 export * from './top-up.js'
 export * from './types.js'
+export * from './wallet-funding.js'
 
 /**
  * Compute adaptive integer scaling for a TiB value so that
