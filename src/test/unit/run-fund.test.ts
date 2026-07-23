@@ -13,6 +13,7 @@ const {
   mockDeposit,
   mockWithdraw,
   mockInitialize,
+  mockGetClientAddress,
   mockEnsureWallet,
 } = vi.hoisted(() => ({
   mockConfirm: vi.fn(),
@@ -24,6 +25,7 @@ const {
   mockDeposit: vi.fn(),
   mockWithdraw: vi.fn(),
   mockInitialize: vi.fn(async () => ({ chain: { id: 314 } })),
+  mockGetClientAddress: vi.fn(() => '0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf'),
   mockEnsureWallet: vi.fn(),
 }))
 
@@ -33,6 +35,7 @@ vi.mock('@clack/prompts', () => ({
 }))
 vi.mock('../../core/synapse/index.js', () => ({
   initializeSynapse: mockInitialize,
+  getClientAddress: mockGetClientAddress,
   mainnet: { id: 314 },
 }))
 vi.mock('../../core/payments/acquisition/orchestrate.js', () => ({
@@ -91,6 +94,7 @@ describe('runFund confirmation exit codes', () => {
     vi.clearAllMocks()
     mockIsCancel.mockReturnValue(false)
     mockInitialize.mockResolvedValue({ chain: { id: 314 } })
+    mockGetClientAddress.mockReturnValue('0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf')
     mockEnsureWallet.mockResolvedValue(undefined)
     process.exitCode = 0
   })
@@ -223,6 +227,27 @@ describe('runFund confirmation exit codes', () => {
     expect(mockLogLine).toHaveBeenCalledWith(expect.stringContaining('SOURCE_RPC_URL and RPC_URL'))
     expect(mockLogLine.mock.calls.flat().join('\n')).not.toContain('https://arbitrum.example/rpc')
     expect(mockLogLine.mock.calls.flat().join('\n')).not.toContain('https://filecoin.example/rpc')
+  })
+
+  it('rejects acquisition before provider work when its private key does not own the Synapse wallet', async () => {
+    const planned = planResult(5_000_000_000_000_000_000n)
+    planned.status = { walletUsdfcBalance: 0n, filBalance: 0n }
+    mockPlan.mockResolvedValueOnce(planned)
+    mockGetClientAddress.mockReturnValueOnce('0x0000000000000000000000000000000000000002')
+
+    await expect(
+      runFund({
+        amount: '5',
+        fromChain: 'arb',
+        fromToken: 'USDC',
+        maxSourceAmount: '10',
+        sourceRpcUrl: 'https://arbitrum.example/rpc',
+        privateKey: '0x0000000000000000000000000000000000000000000000000000000000000001',
+      })
+    ).rejects.toThrow('Acquisition private key must control the configured Filecoin wallet owner')
+
+    expect(mockEnsureWallet).not.toHaveBeenCalled()
+    expect(mockDeposit).not.toHaveBeenCalled()
   })
 
   it('emits a POSIX-safe acquisition resume command without including the private key', async () => {

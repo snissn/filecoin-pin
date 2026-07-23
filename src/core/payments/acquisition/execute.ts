@@ -105,6 +105,7 @@ interface AcquisitionWalletClient {
     args: readonly [Address, bigint]
     gas: bigint
     maxFeePerGas: bigint
+    nonce: number
   }) => Promise<Hex>
   sendTransaction: (parameters: {
     to: Address
@@ -112,6 +113,7 @@ interface AcquisitionWalletClient {
     value: bigint
     gas: bigint
     maxFeePerGas: bigint
+    nonce: number
   }) => Promise<Hex>
 }
 
@@ -397,6 +399,7 @@ export async function executeTokenAcquisition(options: ExecuteTokenAcquisitionOp
         args: [SQUID_ROUTER, preApprovalQuote.sourceAmount],
         gas: approvalGasLimit,
         maxFeePerGas: approvalMaxFeePerGas,
+        nonce: approvalNonce,
       })
       await options.checkpointStore.save({
         version: 1,
@@ -472,6 +475,7 @@ export async function executeTokenAcquisition(options: ExecuteTokenAcquisitionOp
       value: refreshedQuote.value,
       gas: refreshedQuote.gasLimit,
       maxFeePerGas: refreshedQuote.maxFeePerGas,
+      nonce: routeNonce,
     })
     evidence.push({
       asset: refreshedQuote.asset,

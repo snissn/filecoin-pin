@@ -819,8 +819,10 @@ describe('wallet shortfall acquisition planning', () => {
         args: ['0xce16F69375520ab01377ce7B88f5BA8C48F8D666', quote.sourceAmount],
         gas: 3n,
         maxFeePerGas: 5n,
+        nonce: 8,
       })
     )
+    expect(walletClient.sendTransaction).toHaveBeenCalledWith(expect.objectContaining({ nonce: 8 }))
     expect(store.save).toHaveBeenCalledWith(
       expect.objectContaining({
         routeIntent: expect.objectContaining({

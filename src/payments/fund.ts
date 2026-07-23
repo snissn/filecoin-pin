@@ -11,6 +11,7 @@ import { formatUnits, parseUnits } from 'viem'
 import { CliFatal, CliIncomplete, isCliFatal, isCliIncomplete, setIncompleteExitCode } from '../common/cli-errors.js'
 import { MIN_RUNWAY_DAYS } from '../common/constants.js'
 import { resolveIpfsIndexedMetadata } from '../core/metadata/index.js'
+import { sourceAddressForPrivateKey } from '../core/payments/acquisition/execute.js'
 import { ensureWalletReadyForFilecoinTransactions } from '../core/payments/acquisition/orchestrate.js'
 import type { AcquisitionEvidence } from '../core/payments/acquisition/types.js'
 import {
@@ -25,7 +26,7 @@ import {
   toStorageRunwaySummary,
   withdrawUSDFC,
 } from '../core/payments/index.js'
-import { initializeSynapse, mainnet } from '../core/synapse/index.js'
+import { getClientAddress, initializeSynapse, mainnet } from '../core/synapse/index.js'
 import { formatUSDFC } from '../core/utils/format.js'
 import { formatRunwaySummary } from '../core/utils/index.js'
 import { getCLILogger, parseCLIAuth } from '../utils/cli-auth.js'
@@ -121,6 +122,17 @@ function sanitizeRpcErrorMessage(message: string, options: FundOptions): string 
     if (endpoint != null && endpoint !== '') sanitized = sanitized.replaceAll(endpoint, '[redacted RPC URL]')
   }
   return sanitized.replace(/\b(?:https?|wss?):\/\/[^\s'"`<>]+/giu, '[redacted RPC URL]')
+}
+
+/** A source acquisition must fund the same EVM wallet that owns the Filecoin Pay account. */
+function assertAcquisitionOwnerMatchesSynapse(synapse: Synapse, privateKey: string | undefined): void {
+  if (privateKey == null || privateKey === '') return
+  const normalizedPrivateKey = (privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`) as `0x${string}`
+  const sourceOwner = sourceAddressForPrivateKey(normalizedPrivateKey)
+  const filecoinOwner = getClientAddress(synapse)
+  if (sourceOwner.toLowerCase() !== filecoinOwner.toLowerCase()) {
+    throw new Error('Acquisition private key must control the configured Filecoin wallet owner')
+  }
 }
 
 function acquisitionEvidenceLines(evidence: AcquisitionEvidence[]): string[] {
@@ -437,6 +449,7 @@ export async function runFund(options: FundOptions): Promise<void> {
 
     if (plan.delta > 0n && (acquisitionRequested || plan.walletShortfall != null)) {
       if (acquisitionRequested) {
+        assertAcquisitionOwnerMatchesSynapse(synapse, options.privateKey)
         const filShortfall =
           planResult.status.filBalance < MIN_FIL_FOR_GAS ? MIN_FIL_FOR_GAS - planResult.status.filBalance : 0n
         const usdfcShortfall =
