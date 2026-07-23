@@ -75,6 +75,14 @@ function destinationToken(asset: AcquisitionLeg['asset']): string {
   return asset === 'fil' ? FILECOIN_NATIVE_TOKEN : FILECOIN_USDFC
 }
 
+/** EVM address equality is case-insensitive, but malformed provider values never pass validation. */
+function equalEvmAddresses(actual: unknown, expected: string): boolean {
+  if (typeof actual !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(actual) || !/^0x[0-9a-fA-F]{40}$/.test(expected)) {
+    return false
+  }
+  return actual.toLowerCase() === expected.toLowerCase()
+}
+
 function asPositiveBigInt(value: string | undefined, label: string): bigint {
   if (value == null || !/^\d+$/.test(value)) throw providerError(`Squid route is missing ${label}`)
   return BigInt(value)
@@ -131,7 +139,8 @@ export async function getSquidRoute(
     route?.quoteId == null ||
     transaction == null ||
     params == null ||
-    transaction.target?.toLowerCase() !== SQUID_ROUTER.toLowerCase()
+    transaction.target == null ||
+    !equalEvmAddresses(transaction.target, SQUID_ROUTER)
   ) {
     throw providerError('Squid route failed the approved-target validation')
   }
@@ -139,10 +148,10 @@ export async function getSquidRoute(
     params.fromChain !== '42161' ||
     params.fromAmount !== request.sourceAmount.toString() ||
     params.toChain !== String(FILECOIN_MAINNET_CHAIN_ID) ||
-    params.fromToken !== request.leg.source.token ||
-    params.toToken !== destinationToken(request.leg.asset) ||
-    params.fromAddress !== request.fromAddress ||
-    params.toAddress !== request.fromAddress
+    !equalEvmAddresses(params.fromToken, request.leg.source.token) ||
+    !equalEvmAddresses(params.toToken, destinationToken(request.leg.asset)) ||
+    !equalEvmAddresses(params.fromAddress, request.fromAddress) ||
+    !equalEvmAddresses(params.toAddress, request.fromAddress)
   ) {
     throw providerError('Squid route failed the approved-asset validation')
   }

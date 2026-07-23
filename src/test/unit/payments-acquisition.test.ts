@@ -169,6 +169,55 @@ describe('Squid acquisition provider contract', () => {
     ).rejects.toThrow('approved-asset')
   })
 
+  it('accepts equivalent mixed-case EVM addresses in provider route parameters', async () => {
+    const fixture = await routeFixture('squid-route-usdfc.json')
+    const params = fixture.route.params
+    params.fromToken = `0x${String(params.fromToken).slice(2).toUpperCase()}`
+    params.toToken = `0x${String(params.toToken).slice(2).toUpperCase()}`
+    params.fromAddress = OWNER.toLowerCase()
+    params.toAddress = OWNER.toLowerCase()
+
+    await expect(
+      getSquidRoute(
+        {
+          fromAddress: OWNER,
+          sourceAmount: 5_000_000n,
+          leg: { asset: 'usdfc', amount: 1n, source: supportedSource() },
+          slippage: 1,
+        },
+        {
+          integratorId: 'test-only-integrator',
+          fetchFn: vi.fn<typeof fetch>().mockResolvedValue(response(fixture)),
+          now: () => 1_700_000_000_000,
+        }
+      )
+    ).resolves.toMatchObject({ asset: 'usdfc' })
+  })
+
+  it.each([
+    ['an invalid wallet address', 'fromAddress', '0x1234'],
+    ['a valid but wrong destination token', 'toToken', '0x0000000000000000000000000000000000000001'],
+  ])('fails closed for %s in provider route parameters', async (_description, field, value) => {
+    const fixture = await routeFixture('squid-route-usdfc.json')
+    fixture.route.params[field] = value
+
+    await expect(
+      getSquidRoute(
+        {
+          fromAddress: OWNER,
+          sourceAmount: 5_000_000n,
+          leg: { asset: 'usdfc', amount: 1n, source: supportedSource() },
+          slippage: 1,
+        },
+        {
+          integratorId: 'test-only-integrator',
+          fetchFn: vi.fn<typeof fetch>().mockResolvedValue(response(fixture)),
+          now: () => 1_700_000_000_000,
+        }
+      )
+    ).rejects.toThrow('approved-asset')
+  })
+
   it('retries one bounded rate-limit response without widening the request contract', async () => {
     const fixture = await routeFixture('squid-route-fil.json')
     setFixtureSourceAmount(fixture, 500_000n)
