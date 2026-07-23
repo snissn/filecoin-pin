@@ -65,7 +65,7 @@ async function ensureBelowThirtyDaysAllowed(opts: {
 }
 
 function shellQuote(value: string | number): string {
-  return `'${String(value).replaceAll("'", "'\\\"'\\\"'")}'`
+  return `'${String(value).replaceAll("'", "'\"'\"'")}'`
 }
 
 function acquisitionRecoveryCommand(options: FundOptions, hasDays: boolean): string {

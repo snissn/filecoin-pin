@@ -2,7 +2,12 @@ import { mainnet } from '../../synapse/index.js'
 import { MIN_FIL_FOR_GAS } from '../constants.js'
 import { planWalletFunding } from '../wallet-funding.js'
 import { acquireAcquisitionLock, createAcquisitionCheckpointStore } from './checkpoint.js'
-import { executeTokenAcquisition, sourceAddressForPrivateKey, waitForFilecoinWalletReadiness } from './execute.js'
+import {
+  executeTokenAcquisition,
+  MAX_SOURCE_NATIVE_GAS,
+  sourceAddressForPrivateKey,
+  waitForFilecoinWalletReadiness,
+} from './execute.js'
 import {
   parseMaximumSourceAmount,
   planTokenAcquisition,
@@ -108,7 +113,7 @@ export async function ensureWalletReadyForFilecoinTransactions(
       validateMaximumSourceSpend({
         quotes,
         maxSourceAmount: maximumSourceAmount - priorSourceAmount,
-        maxNativeGas: 100_000_000_000_000n,
+        maxNativeGas: MAX_SOURCE_NATIVE_GAS,
       })
       if (pending == null && quotes.length > 0) {
         await options.confirmSourceAcquisition?.({

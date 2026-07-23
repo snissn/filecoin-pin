@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { calibration } from '@filoz/synapse-sdk'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { runFund } from '../../payments/fund.js'
@@ -222,6 +223,52 @@ describe('runFund confirmation exit codes', () => {
     expect(mockLogLine).toHaveBeenCalledWith(expect.stringContaining('SOURCE_RPC_URL and RPC_URL'))
     expect(mockLogLine.mock.calls.flat().join('\n')).not.toContain('https://arbitrum.example/rpc')
     expect(mockLogLine.mock.calls.flat().join('\n')).not.toContain('https://filecoin.example/rpc')
+  })
+
+  it('emits a POSIX-safe acquisition resume command without including the private key', async () => {
+    const planned = planResult(5_000_000_000_000_000_000n)
+    planned.status = { walletUsdfcBalance: 0n, filBalance: 0n }
+    const privateKey = '0x0000000000000000000000000000000000000000000000000000000000000001'
+    mockPlan.mockResolvedValueOnce(planned)
+    mockEnsureWallet.mockRejectedValueOnce(new Error('Squid quote failed (429)'))
+
+    await expect(
+      runFund({
+        amount: '5',
+        fromChain: "arb'quoted",
+        fromToken: 'USDC',
+        maxSourceAmount: '10',
+        sourceRpcUrl: 'https://arbitrum.example/rpc?key=source-secret',
+        rpcUrl: 'https://filecoin.example/rpc?key=filecoin-secret',
+        privateKey,
+      })
+    ).rejects.toThrow('Squid quote failed')
+
+    const line = mockLogLine.mock.calls.flat().find((value) => value.includes('After provider arrival'))
+    if (line == null) throw new Error('expected acquisition recovery command')
+    const command = line.slice(line.indexOf(': ') + 2)
+    const argumentsList = execFileSync('/bin/sh', ['-c', `set -- ${command}; printf '%s\\n' "$@"`], {
+      encoding: 'utf8',
+    })
+      .trimEnd()
+      .split('\n')
+
+    expect(argumentsList).toEqual([
+      'filecoin-pin',
+      'payments',
+      'fund',
+      '--amount',
+      '5',
+      '--from-chain',
+      "arb'quoted",
+      '--from-token',
+      'USDC',
+      '--max-source-amount',
+      '10',
+    ])
+    expect(line).not.toContain(privateKey)
+    expect(line).not.toContain('source-secret')
+    expect(line).not.toContain('filecoin-secret')
   })
 
   it.each([
