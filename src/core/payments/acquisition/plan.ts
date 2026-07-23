@@ -57,6 +57,12 @@ async function planLeg(leg: AcquisitionLeg, options: PlanTokenAcquisitionOptions
       { fromAddress: options.owner, sourceAmount: input, leg, slippage: options.slippage },
       options.provider
     )
+    if (quote.destinationAmount <= 0n) {
+      if (attempt + 1 === MAX_PLANNING_ATTEMPTS) {
+        throw new Error('Squid returned a zero minimum destination amount; cannot plan a safe acquisition')
+      }
+      continue
+    }
     if (quote.destinationAmount >= leg.amount) return quote
     input = ceilDiv(input * leg.amount, quote.destinationAmount)
   }

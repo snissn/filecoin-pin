@@ -78,6 +78,11 @@ export async function ensureWalletReadyForFilecoinTransactions(
   const checkpointStore = createAcquisitionCheckpointStore(sourceOwner)
   try {
     const pending = await checkpointStore.load()
+    if (pending?.approvalIntent != null || pending?.routeIntent != null) {
+      throw new Error(
+        'Acquisition has a pre-broadcast intent without a transaction hash; inspect the recorded nonce before any rerun'
+      )
+    }
     const maximumSourceAmount = parseMaximumSourceAmount(options.maxSourceAmount) as bigint
     const completedAssets = new Set(pending?.evidence.map((item) => item.asset) ?? [])
     const remainingPlan = { ...plan, legs: plan.legs.filter((leg) => !completedAssets.has(leg.asset)) }

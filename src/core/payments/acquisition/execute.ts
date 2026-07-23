@@ -304,10 +304,22 @@ export async function executeTokenAcquisition(options: ExecuteTokenAcquisitionOp
   const sourceAmount = plannedSourceAmount
   if (source.usdc < sourceAmount) throw new Error('Insufficient Arbitrum USDC for the planned acquisition')
   const gasPrice = await publicClient.getGasPrice()
+  const firstQuote = quotes[0]
+  const initialAllowance =
+    firstQuote == null
+      ? 0n
+      : await publicClient.readContract({
+          address: ARBITRUM_USDC,
+          abi: ERC20_ALLOWANCE_ABI,
+          functionName: 'allowance',
+          args: [account.address, SQUID_ROUTER],
+        })
   const approvalGas = (
     await Promise.all(
-      quotes.map(
-        async (quote) =>
+      quotes.map(async (quote, index) => {
+        // A Squid route consumes its allowance. Only the first pending route can reuse what is currently approved.
+        if (index === 0 && initialAllowance === quote.sourceAmount) return 0n
+        return (
           (await publicClient.estimateContractGas({
             account: account.address,
             address: ARBITRUM_USDC,
@@ -315,7 +327,8 @@ export async function executeTokenAcquisition(options: ExecuteTokenAcquisitionOp
             functionName: 'approve',
             args: [SQUID_ROUTER, quote.sourceAmount],
           })) * gasPrice
-      )
+        )
+      })
     )
   ).reduce((total, commitment) => total + commitment, 0n)
   const routeGas = quotes.reduce((total, quote) => total + quote.value + quote.gasLimit * quote.maxFeePerGas, 0n)
