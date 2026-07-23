@@ -15,7 +15,7 @@ The first release supports exactly two output-driven legs from the same owner:
 
 | Field | FIL leg | USDFC leg |
 | --- | --- | --- |
-| Provider | Squid v2 API | Squid v2 API |
+| Provider | [Squid](glossary.md#squid) v2 API | Squid v2 API |
 | Source chain | Arbitrum One (`42161`) | Arbitrum One (`42161`) |
 | Source token | native USDC, 6 decimals, `0xaf88d065e77c8cc2239327c5edb3a432268e5831` | same |
 | Destination chain | Filecoin mainnet (`314`) | Filecoin mainnet (`314`) |
