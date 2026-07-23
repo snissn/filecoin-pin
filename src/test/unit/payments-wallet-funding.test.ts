@@ -1,14 +1,19 @@
 import { describe, expect, it } from 'vitest'
-import {
-  classifyWalletFundingPath,
-  type AcquisitionProvider,
-  type AcquisitionQuote,
-  type AcquisitionErrorCode,
-  type WalletFundingPlan,
-  planWalletFunding,
-} from '../../core/payments/index.js'
+import * as publicPayments from '../../core/payments/index.js'
+import type {
+  AcquisitionErrorCode,
+  AcquisitionQuote,
+  WalletFundingPlan,
+} from '../../core/payments/acquisition/types.js'
+import type { AcquisitionProvider } from '../../core/payments/acquisition/provider.js'
+import { classifyWalletFundingPath, planWalletFunding } from '../../core/payments/wallet-funding.js'
 
 describe('wallet funding planning', () => {
+  it('keeps wallet funding internals out of the published payments barrel', () => {
+    expect(publicPayments).not.toHaveProperty('planWalletFunding')
+    expect(publicPayments).not.toHaveProperty('classifyWalletFundingPath')
+  })
+
   it('classifies each exact wallet shortfall combination', () => {
     expect(classifyWalletFundingPath({ usdfcShortfall: 0n, filShortfall: 0n })).toBe('ready')
     expect(classifyWalletFundingPath({ usdfcShortfall: 0n, filShortfall: 1n })).toBe('acquire-fil')
