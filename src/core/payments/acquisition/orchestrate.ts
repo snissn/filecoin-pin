@@ -63,6 +63,8 @@ function canClearReadyCheckpoint(options: {
   owner: string
   sourceChainId: number
   destinationChainId: number
+  walletFilBalance: bigint
+  walletUsdfcBalance: bigint
 }): boolean {
   const { checkpoint } = options
   return (
@@ -72,7 +74,9 @@ function canClearReadyCheckpoint(options: {
     checkpoint.approvalIntent == null &&
     checkpoint.approvalTransactionHash == null &&
     checkpoint.routeIntent == null &&
-    checkpoint.evidence.every((item) => item.sourceTransactionHash != null)
+    checkpoint.evidence.every((item) => item.sourceTransactionHash != null) &&
+    options.walletFilBalance >= checkpoint.requiredWallet.fil &&
+    options.walletUsdfcBalance >= checkpoint.requiredWallet.usdfc
   )
 }
 
@@ -96,6 +100,8 @@ async function clearCompatibleReadyCheckpoint(
         owner: sourceOwner,
         sourceChainId: source.chainId,
         destinationChainId: options.destinationChainId,
+        walletFilBalance: options.walletFilBalance,
+        walletUsdfcBalance: options.walletUsdfcBalance,
       })
     ) {
       await checkpointStore.clear()
