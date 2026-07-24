@@ -161,6 +161,46 @@ describe('runFund confirmation exit codes', () => {
     expect(mockEnsureWallet).toHaveBeenCalledWith(expect.objectContaining({ destinationChainId: calibration.id }))
   })
 
+  it.each([
+    ['deposit', 5_000_000_000_000_000_000n, mockDeposit],
+    ['withdraw', -5_000_000_000_000_000_000n, mockWithdraw],
+  ])('keeps the direct %s path direct when Commander supplies SOURCE_RPC_URL', async (_operation, delta, adjustment) => {
+    const synapse = {
+      chain: { id: 314 },
+      payments: { accountSummary: vi.fn().mockResolvedValue({ funds: 0n }) },
+    }
+    mockInitialize.mockResolvedValueOnce(synapse)
+    mockPlan.mockResolvedValueOnce(planResult(delta))
+    mockConfirm.mockResolvedValueOnce(true)
+    mockDeposit.mockResolvedValueOnce({ depositTx: '0xdeposit' })
+    mockWithdraw.mockResolvedValueOnce('0xwithdraw')
+
+    await runFund({ amount: '5', sourceRpcUrl: 'https://ambient-source-rpc.example/rpc' })
+
+    expect(mockPlan).toHaveBeenCalledWith(expect.objectContaining({ validateWalletReadiness: true }))
+    expect(mockEnsureWallet).not.toHaveBeenCalled()
+    expect(adjustment).toHaveBeenCalledWith(synapse, 5_000_000_000_000_000_000n)
+  })
+
+  it('uses source RPC and slippage only when the complete acquisition tuple is present', async () => {
+    mockPlan.mockResolvedValueOnce(planResult(5_000_000_000_000_000_000n))
+    mockConfirm.mockResolvedValueOnce(false)
+
+    await runFund({
+      amount: '5',
+      fromChain: 'arb',
+      fromToken: 'USDC',
+      maxSourceAmount: '10',
+      sourceRpcUrl: 'https://ambient-source-rpc.example/rpc',
+      slippage: 1,
+      privateKey: '0x0000000000000000000000000000000000000000000000000000000000000001',
+    })
+
+    expect(mockEnsureWallet).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceRpcUrl: 'https://ambient-source-rpc.example/rpc', slippage: 1 })
+    )
+  })
+
   it('exits with code 2 when an interactive source acquisition is declined before execution', async () => {
     mockPlan.mockResolvedValueOnce(planResult(5_000_000_000_000_000_000n))
     mockEnsureWallet.mockImplementationOnce(
@@ -436,10 +476,27 @@ describe('runFund confirmation exit codes', () => {
     expect(output).not.toContain('https://filecoin.example/rpc')
   })
 
-  it('rejects --slippage unless the complete acquisition tuple is present', async () => {
+  it('keeps an ambient source RPC inert without a source tuple', async () => {
+    const synapse = {
+      chain: { id: 314 },
+      payments: { accountSummary: vi.fn().mockResolvedValue({ funds: 0n }) },
+    }
+    mockInitialize.mockResolvedValueOnce(synapse)
+    mockPlan.mockResolvedValueOnce(planResult(0n))
+
+    await runFund({ amount: '5', sourceRpcUrl: 'https://ambient-source-rpc.example/rpc' })
+
+    expect(mockPlan).toHaveBeenCalledWith(expect.objectContaining({ validateWalletReadiness: true }))
+    expect(mockEnsureWallet).not.toHaveBeenCalled()
+  })
+
+  it('rejects standalone slippage and incomplete acquisition tuples', async () => {
     await expect(runFund({ amount: '5', slippage: 1 })).rejects.toThrow(
       'Acquisition requires --from-chain, --from-token, and --max-source-amount together'
     )
+    await expect(
+      runFund({ amount: '5', fromChain: 'arb', sourceRpcUrl: 'https://ambient-source-rpc.example/rpc' })
+    ).rejects.toThrow('Acquisition requires --from-chain, --from-token, and --max-source-amount together')
     expect(mockInitialize).not.toHaveBeenCalled()
   })
 })

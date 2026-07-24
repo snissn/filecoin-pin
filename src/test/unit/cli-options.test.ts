@@ -6,6 +6,7 @@ import { log } from '../../utils/cli-logger.js'
 import {
   addAuthOptions,
   addDataSetIdOption,
+  addFundingSourceOptions,
   addNetworkOptions,
   addOwnerAuthOptions,
   addProviderIdOption,
@@ -159,6 +160,31 @@ describe('auth and context option env bindings', () => {
     if (createCommand) {
       expect(envVarFor(createCommand, '--session-key')).toBe('SESSION_KEY')
     }
+  })
+})
+
+describe('funding-source option environment bindings', () => {
+  const originalSourceRpcUrl = process.env.SOURCE_RPC_URL
+
+  beforeEach(() => {
+    delete process.env.SOURCE_RPC_URL
+  })
+
+  afterEach(() => {
+    if (originalSourceRpcUrl === undefined) delete process.env.SOURCE_RPC_URL
+    else process.env.SOURCE_RPC_URL = originalSourceRpcUrl
+  })
+
+  it('passes an ambient SOURCE_RPC_URL through without inferring an acquisition tuple', () => {
+    process.env.SOURCE_RPC_URL = 'https://ambient-source-rpc.example/rpc'
+    const command = addFundingSourceOptions(new Command()).exitOverride()
+
+    command.parse([], { from: 'user' })
+
+    expect(command.opts()).toMatchObject({ sourceRpcUrl: 'https://ambient-source-rpc.example/rpc' })
+    expect(command.opts()).not.toHaveProperty('fromChain')
+    expect(command.opts()).not.toHaveProperty('fromToken')
+    expect(command.opts()).not.toHaveProperty('maxSourceAmount')
   })
 })
 

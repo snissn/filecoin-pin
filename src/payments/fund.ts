@@ -341,10 +341,9 @@ export async function runFund(options: FundOptions): Promise<void> {
   if (sourceOptionCount > 0 && sourceOptionCount !== 3) {
     throw new CliFatal('Acquisition requires --from-chain, --from-token, and --max-source-amount together')
   }
-  if ((options.sourceRpcUrl != null || options.slippage != null) && sourceOptionCount !== 3) {
+  if (options.slippage != null && sourceOptionCount !== 3) {
     throw new CliFatal('Acquisition requires --from-chain, --from-token, and --max-source-amount together')
   }
-
   spinner.start('Connecting...')
   try {
     // Parse and validate authentication
@@ -368,11 +367,9 @@ export async function runFund(options: FundOptions): Promise<void> {
     }
 
     spinner.start('Calculating funding plan...')
-    const acquisitionRequested =
-      options.fromChain != null ||
-      options.fromToken != null ||
-      options.maxSourceAmount != null ||
-      options.sourceRpcUrl != null
+    // SOURCE_RPC_URL can be ambient Commander configuration for a later acquisition.
+    // It must not turn an ordinary Filecoin Pay deposit or withdrawal into one.
+    const acquisitionRequested = sourceOptionCount === 3
     const planResult = await planFilecoinPayFunding({
       synapse,
       targetRunwayDays: hasDays ? targetDays : undefined,
