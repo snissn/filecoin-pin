@@ -197,6 +197,8 @@ export async function runAutoSetup(options: PaymentSetupOptions): Promise<void> 
   // we connect to a provider or send a Filecoin transaction.
   const acquisitionRequested = validateAcquisitionOptions(options)
   let acquisitionRetryCommand: string | undefined
+  let directRetryCommand: string | undefined
+  let acquisitionCompleted = false
 
   const spinner = createSpinner()
   spinner.start('Initializing connection...')
@@ -266,6 +268,7 @@ export async function runAutoSetup(options: PaymentSetupOptions): Promise<void> 
     const resolvedTargetFilecoinPayBalance = targetFilecoinPayBalance
     if (acquisitionRequested) {
       acquisitionRetryCommand = formatAutoSetupRetryCommand(options, resolvedTargetFilecoinPayBalance)
+      directRetryCommand = formatAutoSetupDirectRetryCommand(options, resolvedTargetFilecoinPayBalance)
     }
 
     // Track if any changes were made
@@ -332,6 +335,10 @@ export async function runAutoSetup(options: PaymentSetupOptions): Promise<void> 
           return { fil: freshStatus.filBalance, usdfc: freshStatus.walletUsdfcBalance }
         },
       })
+      // A successful source route has already funded the Filecoin wallet. Any
+      // later failure must resume only the local Filecoin payment work, never
+      // suggest another provider route that could acquire funds again.
+      acquisitionCompleted = true
       const refreshedStatus = await getPaymentStatus(synapse)
       currentWalletFilBalance = refreshedStatus.filBalance
       currentWalletUsdfcBalance = refreshedStatus.walletUsdfcBalance
@@ -426,10 +433,15 @@ export async function runAutoSetup(options: PaymentSetupOptions): Promise<void> 
         ? error.message
         : String(error)
     spinner.stop(`${pc.red('✗')} Setup failed: ${msg}`)
-    if (acquisitionRequested && acquisitionRetryCommand != null) {
-      log.line(pc.yellow(`Retry source acquisition: ${acquisitionRetryCommand}`))
-      log.line(pc.yellow(acquisitionRecoveryNote()))
-      log.flush()
+    if (acquisitionRequested) {
+      if (acquisitionCompleted && directRetryCommand != null) {
+        log.line(pc.yellow(`Retry direct deposit: ${directRetryCommand}`))
+        log.flush()
+      } else if (acquisitionRetryCommand != null) {
+        log.line(pc.yellow(`Retry source acquisition: ${acquisitionRetryCommand}`))
+        log.line(pc.yellow(acquisitionRecoveryNote()))
+        log.flush()
+      }
     }
     cancel('Setup failed')
     // This error can be handed to callers or reporters. Do not retain the

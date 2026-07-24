@@ -89,6 +89,16 @@ function serializeErrorTree(value: unknown, seen = new Set<unknown>()): string {
     .join('\n')
 }
 
+function expectPostAcquisitionDirectRecovery(): void {
+  expect(mockEnsureWallet).toHaveBeenCalledTimes(1)
+  const output = mockLogLine.mock.calls.flat().join('\n')
+  expect(output).toContain('Retry direct deposit:')
+  expect(output).not.toContain('Retry source acquisition:')
+  expect(output).not.toContain('--from-chain')
+  expect(output).not.toContain('--from-token')
+  expect(output).not.toContain('--max-source-amount')
+}
+
 describe('runAutoSetup acquisition integration', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -211,6 +221,60 @@ describe('runAutoSetup acquisition integration', () => {
     expect(mockEnsureWallet).toHaveBeenCalledWith(expect.objectContaining({ requiredUsdfc: 0n }))
     expect(mockDeposit).not.toHaveBeenCalled()
     expect(mockCheckAndSetAllowances).toHaveBeenCalled()
+  })
+
+  it('offers only direct payment recovery after a completed acquisition and failed deposit', async () => {
+    mockDeposit.mockRejectedValueOnce(new Error('deposit failed'))
+
+    await expect(
+      runAutoSetup({
+        auto: true,
+        deposit: '2',
+        rateAllowance: '1TiB/month',
+        fromChain: 'arb',
+        fromToken: 'USDC',
+        maxSourceAmount: '3',
+        privateKey: '0x0000000000000000000000000000000000000000000000000000000000000001',
+      })
+    ).rejects.toThrow('deposit failed')
+
+    expectPostAcquisitionDirectRecovery()
+    expect(mockDeposit).toHaveBeenCalledTimes(1)
+    expect(mockCheckAndSetAllowances).not.toHaveBeenCalled()
+  })
+
+  it('offers only direct payment recovery after a completed acquisition and failed approval', async () => {
+    mockGetPaymentStatus.mockReset()
+    mockGetPaymentStatus
+      .mockResolvedValueOnce({
+        filecoinPayBalance: TWO_USDFC,
+        filBalance: 0n,
+        walletUsdfcBalance: 0n,
+        currentAllowances: {},
+      })
+      .mockResolvedValueOnce({
+        filecoinPayBalance: TWO_USDFC,
+        filBalance: 100n,
+        walletUsdfcBalance: 0n,
+        currentAllowances: {},
+      })
+    mockCheckAndSetAllowances.mockRejectedValueOnce(new Error('approval failed'))
+
+    await expect(
+      runAutoSetup({
+        auto: true,
+        deposit: '2',
+        rateAllowance: '1TiB/month',
+        fromChain: 'arb',
+        fromToken: 'USDC',
+        maxSourceAmount: '3',
+        privateKey: '0x0000000000000000000000000000000000000000000000000000000000000001',
+      })
+    ).rejects.toThrow('approval failed')
+
+    expectPostAcquisitionDirectRecovery()
+    expect(mockDeposit).not.toHaveBeenCalled()
+    expect(mockCheckAndSetAllowances).toHaveBeenCalledTimes(1)
   })
 
   it('rejects a partial source selection before connecting or sending a transaction', async () => {
