@@ -116,15 +116,24 @@ export async function ensureWalletReadyForFilecoinTransactions(
   options: EnsureWalletReadyOptions
 ): Promise<AcquisitionEvidence[]> {
   const source = resolveSourceToken(options.fromChain, options.fromToken)
+  // The status read that led to this workflow can be stale while an operator
+  // completes a direct top-up. Acquire only against the last destination view
+  // available before we calculate shortfalls or contact the provider.
+  const currentWallet = await options.rereadWalletBalances()
   const plan = planWalletFunding({
     requiredUsdfc: options.requiredUsdfc,
-    walletUsdfcBalance: options.walletUsdfcBalance,
+    walletUsdfcBalance: currentWallet.usdfc,
     requiredFilReserve: MIN_FIL_FOR_GAS,
-    walletFilBalance: options.walletFilBalance,
+    walletFilBalance: currentWallet.fil,
     ...(source != null ? { source } : {}),
   })
   if (plan.path === 'ready') {
-    if (source != null) await clearCompatibleReadyCheckpoint(options, source)
+    if (source != null) {
+      await clearCompatibleReadyCheckpoint(
+        { ...options, walletFilBalance: currentWallet.fil, walletUsdfcBalance: currentWallet.usdfc },
+        source
+      )
+    }
     return []
   }
   if (options.destinationChainId !== mainnet.id) {

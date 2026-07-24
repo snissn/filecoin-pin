@@ -419,10 +419,65 @@ describe('Squid acquisition provider contract', () => {
         maxSourceAmount: '1',
         privateKey: '0x0000000000000000000000000000000000000000000000000000000000000001',
         provider: { integratorId: 'test-only-integrator', fetchFn },
-        rereadWalletBalances: vi.fn(),
+        rereadWalletBalances: vi.fn().mockResolvedValue({ fil: 0n, usdfc: 0n }),
       })
     ).rejects.toThrow('only on Filecoin mainnet')
     expect(fetchFn).not.toHaveBeenCalled()
+  })
+
+  it('uses a fresh ready wallet view before provider planning and safely clears a compatible checkpoint', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'filecoin-pin-acquisition-home-'))
+    const originalHome = process.env.HOME
+    process.env.HOME = directory
+    try {
+      const owner = sourceAddressForPrivateKey(PRIVATE_KEY)
+      const store = createAcquisitionCheckpointStore(owner)
+      await store.save({
+        version: 1,
+        owner,
+        sourceChainId: 42161,
+        destinationChainId: 314,
+        committedNativeGas: 1n,
+        requiredWallet: { fil: 100_000_000_000_000_000n, usdfc: 1n },
+        evidence: [
+          {
+            asset: 'usdfc',
+            quoteId: 'manual-top-up-arrived',
+            sourceAmount: '1',
+            sourceTransactionHash: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            status: 'submitted',
+          },
+        ],
+      })
+      const fetchFn = vi.fn<typeof fetch>()
+      const confirmation = vi.fn(async (_summary: SourceAcquisitionConfirmation) => undefined)
+      const rereadWalletBalances = vi.fn().mockResolvedValue({ fil: 100_000_000_000_000_000n, usdfc: 1n })
+
+      await expect(
+        ensureWalletReadyForFilecoinTransactions({
+          destinationChainId: 314,
+          walletUsdfcBalance: 0n,
+          walletFilBalance: 0n,
+          requiredUsdfc: 1n,
+          fromChain: 'arb',
+          fromToken: 'USDC',
+          maxSourceAmount: '1',
+          privateKey: PRIVATE_KEY,
+          provider: { integratorId: 'test-only-integrator', fetchFn },
+          confirmSourceAcquisition: confirmation,
+          rereadWalletBalances,
+        })
+      ).resolves.toEqual([])
+
+      expect(rereadWalletBalances).toHaveBeenCalledOnce()
+      expect(fetchFn).not.toHaveBeenCalled()
+      expect(confirmation).not.toHaveBeenCalled()
+      await expect(store.load()).resolves.toBeUndefined()
+    } finally {
+      if (originalHome == null) delete process.env.HOME
+      else process.env.HOME = originalHome
+      await rm(directory, { recursive: true, force: true })
+    }
   })
 
   it('clears a compatible route checkpoint when delayed Filecoin arrival makes a retry ready', async () => {
@@ -462,7 +517,7 @@ describe('Squid acquisition provider contract', () => {
           maxSourceAmount: '1',
           privateKey: PRIVATE_KEY,
           provider: { integratorId: undefined, fetchFn },
-          rereadWalletBalances: vi.fn(),
+          rereadWalletBalances: vi.fn().mockResolvedValue({ fil: 100_000_000_000_000_000n, usdfc: 1n }),
         })
       ).resolves.toEqual([])
 
@@ -512,7 +567,7 @@ describe('Squid acquisition provider contract', () => {
           maxSourceAmount: '1',
           privateKey: PRIVATE_KEY,
           provider: { integratorId: undefined, fetchFn },
-          rereadWalletBalances: vi.fn(),
+          rereadWalletBalances: vi.fn().mockResolvedValue({ fil: 100_000_000_000_000_000n, usdfc: 1n }),
         })
       ).resolves.toEqual([])
 
@@ -530,7 +585,7 @@ describe('Squid acquisition provider contract', () => {
           maxSourceAmount: '1',
           privateKey: PRIVATE_KEY,
           provider: { integratorId: undefined, fetchFn },
-          rereadWalletBalances: vi.fn(),
+          rereadWalletBalances: vi.fn().mockResolvedValue({ fil: 200_000_000_000_000_000n, usdfc: 5n }),
         })
       ).resolves.toEqual([])
 
@@ -571,7 +626,7 @@ describe('Squid acquisition provider contract', () => {
           maxSourceAmount: '1',
           privateKey: PRIVATE_KEY,
           provider: { integratorId: undefined },
-          rereadWalletBalances: vi.fn(),
+          rereadWalletBalances: vi.fn().mockResolvedValue({ fil: 100_000_000_000_000_000n, usdfc: 1n }),
         })
       ).resolves.toEqual([])
 
@@ -622,7 +677,7 @@ describe('Squid acquisition provider contract', () => {
           maxSourceAmount: '1',
           privateKey: PRIVATE_KEY,
           provider: { integratorId: undefined },
-          rereadWalletBalances: vi.fn(),
+          rereadWalletBalances: vi.fn().mockResolvedValue({ fil: 100_000_000_000_000_000n, usdfc: 1n }),
         })
       ).resolves.toEqual([])
 
@@ -671,7 +726,7 @@ describe('Squid acquisition provider contract', () => {
           maxSourceAmount: '1',
           privateKey: PRIVATE_KEY,
           provider: { integratorId: undefined, fetchFn },
-          rereadWalletBalances: vi.fn(),
+          rereadWalletBalances: vi.fn().mockResolvedValue({ fil: 0n, usdfc: 0n }),
         })
       ).rejects.toThrow('pre-broadcast intent without a transaction hash')
 
@@ -731,7 +786,7 @@ describe('Squid acquisition provider contract', () => {
             fetchFn: vi.fn<typeof fetch>().mockResolvedValue(response(fixture)),
           },
           confirmSourceAcquisition: confirmation,
-          rereadWalletBalances: vi.fn(),
+          rereadWalletBalances: vi.fn().mockResolvedValue({ fil: 100_000_000_000_000_000n, usdfc: 0n }),
         })
       ).rejects.toThrow('confirmation reached before execution')
 
@@ -818,7 +873,7 @@ describe('Squid acquisition provider contract', () => {
       ).resolves.toMatchObject([{ asset: 'usdfc', status: 'confirmed' }])
 
       expect(confirmation).not.toHaveBeenCalled()
-      expect(fetchFn).toHaveBeenCalledOnce()
+      expect(fetchFn).not.toHaveBeenCalled()
       await expect(store.load()).resolves.toBeUndefined()
     } finally {
       await new Promise<void>((resolve, reject) =>
