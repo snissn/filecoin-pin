@@ -1,0 +1,181 @@
+{
+  "schemaVersion": "1.0",
+  "scope": "Sanitized, versioned evidence index for issue #6. It records only facts preserved in this repository; absent transaction identifiers are explicitly pending rather than invented.",
+  "evidenceSource": {
+    "repositoryBaseCommit": "a6a67ff9dea000296deca34324886ccc35ff3114",
+    "recordRevision": "Maintained on the issue #6 branch; the merge PR records the exact evidence-record commit."
+  },
+  "route": {
+    "sourceChain": "Arbitrum One (42161) native USDC",
+    "destination": "Filecoin mainnet (314), FIL and USDFC",
+    "provider": "Squid v2",
+    "timingAndPollBounds": {
+      "planningQuoteAttemptsPerLegMax": 4,
+      "finalizationQuoteAttemptsPerLegMax": 2,
+      "statusPollSecondsInitially": 5,
+      "statusPollSecondsAfterTwoMinutes": 15,
+      "deadline": "max(15 minutes, 2x estimated route duration), capped at 1 hour"
+    },
+    "decisionRecord": "documentation/payments-acquisition-route.md"
+  },
+  "reviewedMainnetCaps": {
+    "sourceUSDC": "10",
+    "sourceNativeGasArbitrumETH": "0.0001",
+    "status": "approved smoke-test caps; executed mainnet evidence remains pending"
+  },
+  "records": [
+    {
+      "id": "deterministic-payments-fund",
+      "network": "deterministic",
+      "source": { "issue": "#4", "mergedPullRequest": "#9", "commit": "97eee09f30a083816a630eaf1553472ba07e6ee5" },
+      "command": "pnpm exec vitest run --project unit src/test/unit/payments-acquisition.test.ts src/test/unit/run-fund.test.ts src/test/unit/payments-funding.test.ts",
+      "outcome": "Fixtures and mocked RPCs cover the fund route allowlist, caps, bounded status polling, source/deposit ordering, reruns, and recovery. No live transaction is sent.",
+      "transactionHashes": [],
+      "limits": "Does not prove bridge delivery, public-chain confirmation, or production liquidity."
+    },
+    {
+      "id": "deterministic-payments-setup",
+      "network": "deterministic",
+      "source": { "issue": "#5", "mergedPullRequest": "#10", "commit": "a6a67ff9dea000296deca34324886ccc35ff3114" },
+      "command": "pnpm exec vitest run --project unit src/test/unit/payments-auto.test.ts",
+      "outcome": "Mocks cover target calculation, readiness deferral, acquisition-before-deposit ordering, safe post-acquisition recovery, and fail-closed unsupported networks. No live transaction is sent.",
+      "transactionHashes": [],
+      "limits": "Does not prove direct public-network transaction confirmation."
+    },
+    {
+      "id": "local-devnet-payments-fund",
+      "network": "foc-devnet",
+      "source": { "issue": "#4", "mergedPullRequest": "#9" },
+      "command": "filecoin-pin payments fund --amount 0.1 --mode minimum --network devnet",
+      "outcome": "Local direct Filecoin Pay funding and rerun evidence was captured before the release-evidence record existed.",
+      "transactionHashes": ["0xec7b836ac7ea85f533427f7fa233a269f582335474cd1855d27b2ee1042c3349"],
+      "reruns": [
+        {
+          "capturedAt": "2026-07-24 UTC",
+          "captureHarness": "scripts/release-evidence.mjs (artifact schema 1.0)",
+          "command": "node dist/cli.js payments fund --amount 1 --mode minimum --network devnet",
+          "exitCode": 0,
+          "outcome": "USER_3 already had 1.0000 deposited; No Changes Needed and no active spend was present.",
+          "transactionSubmitted": false
+        }
+      ],
+      "limits": "Acquisition is mocked on devnet."
+    },
+    {
+      "id": "calibration-payments-fund",
+      "network": "Calibration (314159)",
+      "source": { "issue": "#4", "mergedPullRequest": "#9" },
+      "command": "filecoin-pin payments fund --amount 7.1 --mode minimum --network calibration",
+      "outcome": "Direct public-testnet Filecoin Pay funding was captured; acquisition fails closed on Calibration.",
+      "transactionHashes": ["0x01c634d203abb4787dfe7079341da44c872a78ae60ba056866ab7aa526cc12f9"],
+      "reruns": [
+        {
+          "capturedAt": "2026-07-24 UTC",
+          "captureHarness": "scripts/release-evidence.mjs (artifact schema 1.0)",
+          "command": "node dist/cli.js payments fund --amount 7.4 --mode minimum --network calibration",
+          "exitCode": 0,
+          "outcome": "No Changes Needed; the Filecoin Pay balance was already above the 7.4 USDFC minimum.",
+          "transactionSubmitted": false
+        },
+        {
+          "capturedAt": "2026-07-24 UTC",
+          "captureHarness": "scripts/release-evidence.mjs (artifact schema 1.0)",
+          "command": "node dist/cli.js payments fund --days 1 --mode minimum --network calibration",
+          "exitCode": 0,
+          "outcome": "No Changes Needed; 7.4000 USDFC was deposited and the CLI estimated roughly 4y 2m 21d total coverage with a top-up estimate of roughly 4y 28d.",
+          "transactionSubmitted": false
+        }
+      ],
+      "limits": "Calibration cannot prove the mainnet acquisition route. Its 1-day runway output is not evidence for the mandatory mainnet active-spend funded-until gate."
+    },
+    {
+      "id": "local-devnet-payments-setup",
+      "network": "foc-devnet",
+      "source": { "issue": "#5", "mergedPullRequest": "#10" },
+      "command": "filecoin-pin payments setup --auto --network devnet --deposit 1; rerun the same command",
+      "outcome": "A fresh local user deposited 1 mock USDFC; the rerun was a no-op and preserved the deposit. Forced acquisition shortfall failed closed before provider use.",
+      "transactionHashes": [],
+      "transactionHashStatus": "setup transaction hash absent from retained evidence",
+      "reruns": [
+        {
+          "capturedAt": "2026-07-24 UTC",
+          "captureHarness": "scripts/release-evidence.mjs (artifact schema 1.0)",
+          "command": "node dist/cli.js payments setup --auto --deposit 1 --network devnet",
+          "exitCode": 0,
+          "outcome": "USER_3 already had 1.0000 deposited; it was sufficient and the CLI reported Ready to upload.",
+          "transactionSubmitted": false
+        }
+      ],
+      "limits": "Proves local Filecoin-side deposit and rerun behavior only."
+    },
+    {
+      "id": "calibration-payments-setup",
+      "network": "Calibration (314159)",
+      "source": { "issue": "#5", "mergedPullRequest": "#10" },
+      "command": "node dist/cli.js payments setup --auto --deposit 7.4 --network calibration",
+      "outcome": "Direct setup reached 7.4000 USDFC deposited; the verified rerun reported Ready to upload with no deposit or other action submitted. A forced source-acquisition request exited 1 before provider or source-chain activity.",
+      "transactionHashes": [],
+      "transactionHashStatus": "setup transaction hash absent from retained evidence",
+      "reruns": [
+        {
+          "capturedAt": "2026-07-24 UTC",
+          "captureHarness": "scripts/release-evidence.mjs (artifact schema 1.0)",
+          "command": "node dist/cli.js payments setup --auto --deposit 7.4 --network calibration",
+          "exitCode": 0,
+          "outcome": "7.4000 USDFC was already sufficient and the CLI reported Ready to upload; no deposit or other action was submitted.",
+          "transactionSubmitted": false
+        }
+      ],
+      "limits": "Calibration intentionally fails source acquisition closed."
+    },
+    {
+      "id": "repository-preserved-mainnet-route-snapshot-2026-07-23",
+      "network": "read-only provider API snapshot",
+      "source": {
+        "issue": "#2",
+        "validatedAt": "2026-07-23 UTC",
+        "decisionRecord": "documentation/payments-acquisition-route.md",
+        "commit": "6a1416f7e8b9bc97697a9d7c25fe9b025a60448e",
+        "owner": "unfunded disposable 0x...F00D"
+      },
+      "commands": ["GET /v2/chains and /v2/tokens", "0.5 Arbitrum USDC route probes for FIL and USDFC"],
+      "outcome": {
+        "chains": "Read-only /v2/chains and /v2/tokens responses included Filecoin mainnet and excluded Calibration 314159.",
+        "FIL": "0.5 Arbitrum USDC observed minimum output: 0.677010422296478806 FIL; estimated duration 90 seconds.",
+        "USDFC": "0.5 Arbitrum USDC observed minimum output: 0.489408816834980334 USDFC; estimated duration 90 seconds."
+      },
+      "transactionHashes": [],
+      "limits": "Repository-preserved #2 snapshot only; values are fixtures and budget inputs, not stable exchange-rate guarantees or evidence of a signed or submitted transaction. Runtime quotes remain authoritative."
+    },
+    {
+      "id": "mainnet-release-smoke",
+      "network": "Filecoin mainnet (314)",
+      "source": { "issue": "#6", "relatedMergedPullRequests": ["#9", "#10"] },
+      "status": "pending funded release evidence",
+      "requiredFields": {
+        "startingBalances": null,
+        "sourceCapUSDC": null,
+        "sourceNativeGasCapETH": null,
+        "FILRoute": {
+          "quoteId": null,
+          "requestId": null,
+          "approvalTransactionHash": null,
+          "sourceTransactionHash": null,
+          "destinationTransactionHash": null
+        },
+        "USDFCRoute": {
+          "quoteId": null,
+          "requestId": null,
+          "approvalTransactionHash": null,
+          "sourceTransactionHash": null,
+          "destinationTransactionHash": null
+        },
+        "filecoinPayDepositTransactionHash": null,
+        "rerunEvidence": null,
+        "fundedUntilEvidence": null,
+        "initialSetupReadySummary": null
+      },
+      "limits": "No mainnet transaction has been sent by this evidence record. Do not claim release readiness until every required field is captured and independently verified."
+    }
+  ]
+}
