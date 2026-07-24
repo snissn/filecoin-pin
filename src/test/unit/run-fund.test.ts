@@ -226,6 +226,24 @@ describe('runFund confirmation exit codes', () => {
     expect(mockWithdraw).not.toHaveBeenCalled()
   })
 
+  it('keeps direct Calibration wallet shortfalls out of the acquisition helper', async () => {
+    const basePlan = planResult(5_000_000_000_000_000_000n)
+    const planned = {
+      ...basePlan,
+      plan: { ...basePlan.plan, walletShortfall: basePlan.plan.delta },
+      status: { walletUsdfcBalance: 0n, filBalance: 100_000_000_000_000_000n },
+    }
+    mockInitialize.mockResolvedValueOnce({ chain: { id: calibration.id } })
+    mockPlan.mockResolvedValueOnce(planned)
+
+    await expect(runFund({ amount: '5', network: 'calibration' })).rejects.toThrow(
+      'Insufficient USDFC in wallet (need 5000000000000000000 USDFC, have 0 USDFC)'
+    )
+
+    expect(mockEnsureWallet).not.toHaveBeenCalled()
+    expect(mockDeposit).not.toHaveBeenCalled()
+  })
+
   it('exits with code 2 when an interactive source acquisition is declined before execution', async () => {
     mockPlan.mockResolvedValueOnce(planResult(5_000_000_000_000_000_000n))
     mockEnsureWallet.mockImplementationOnce(

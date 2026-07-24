@@ -470,22 +470,20 @@ export async function runFund(options: FundOptions): Promise<void> {
       throw new CliFatal('Token acquisition requires signing auth; --view-address is read-only')
     }
 
-    if (plan.delta > 0n && (acquisitionRequested || plan.walletShortfall != null)) {
-      if (acquisitionRequested) {
-        assertAcquisitionOwnerMatchesSynapse(synapse, options.privateKey)
-        const filShortfall =
-          planResult.status.filBalance < MIN_FIL_FOR_GAS ? MIN_FIL_FOR_GAS - planResult.status.filBalance : 0n
-        const usdfcShortfall =
-          planResult.status.walletUsdfcBalance < plan.delta ? plan.delta - planResult.status.walletUsdfcBalance : 0n
-        acquisitionDiagnostics = `Remaining wallet shortfalls: FIL ${formatUnits(filShortfall, 18)}, USDFC ${formatUnits(usdfcShortfall, 18)}. Squid fallback: https://app.squidrouter.com/`
-        acquisitionResumeCommand = acquisitionRecoveryCommand(options, hasDays)
-        acquisitionRecoveryKind = 'await-provider'
-        if (synapse.chain.id !== mainnet.id) {
-          acquisitionDiagnostics =
-            'Direct wallet funding is required on this network: add FIL and USDFC, then retry the Filecoin Pay deposit without source acquisition.'
-          acquisitionResumeCommand = directDepositRecoveryCommand(options, hasDays)
-          acquisitionRecoveryKind = 'direct-funding'
-        }
+    if (plan.delta > 0n && acquisitionRequested) {
+      assertAcquisitionOwnerMatchesSynapse(synapse, options.privateKey)
+      const filShortfall =
+        planResult.status.filBalance < MIN_FIL_FOR_GAS ? MIN_FIL_FOR_GAS - planResult.status.filBalance : 0n
+      const usdfcShortfall =
+        planResult.status.walletUsdfcBalance < plan.delta ? plan.delta - planResult.status.walletUsdfcBalance : 0n
+      acquisitionDiagnostics = `Remaining wallet shortfalls: FIL ${formatUnits(filShortfall, 18)}, USDFC ${formatUnits(usdfcShortfall, 18)}. Squid fallback: https://app.squidrouter.com/`
+      acquisitionResumeCommand = acquisitionRecoveryCommand(options, hasDays)
+      acquisitionRecoveryKind = 'await-provider'
+      if (synapse.chain.id !== mainnet.id) {
+        acquisitionDiagnostics =
+          'Direct wallet funding is required on this network: add FIL and USDFC, then retry the Filecoin Pay deposit without source acquisition.'
+        acquisitionResumeCommand = directDepositRecoveryCommand(options, hasDays)
+        acquisitionRecoveryKind = 'direct-funding'
       }
       const completedAcquisition = await ensureWalletReadyForFilecoinTransactions({
         destinationChainId: synapse.chain.id,
