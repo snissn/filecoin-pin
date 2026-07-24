@@ -316,23 +316,22 @@ export async function executeTokenAcquisition(options: ExecuteTokenAcquisitionOp
           functionName: 'allowance',
           args: [account.address, SQUID_ROUTER],
         })
-  const approvalGas = (
-    await Promise.all(
-      quotes.map(async (quote, index) => {
-        // A Squid route consumes its allowance. Only the first pending route can reuse what is currently approved.
-        if (index === 0 && initialAllowance === quote.sourceAmount) return 0n
-        return (
-          (await publicClient.estimateContractGas({
-            account: account.address,
-            address: ARBITRUM_USDC,
-            abi: ERC20_ALLOWANCE_ABI,
-            functionName: 'approve',
-            args: [SQUID_ROUTER, quote.sourceAmount],
-          })) * gasPrice
-        )
-      })
-    )
-  ).reduce((total, commitment) => total + commitment, 0n)
+  const approvalCommitments = await Promise.all(
+    quotes.map(async (quote, index) => {
+      // A Squid route consumes its allowance. Only the first pending route can reuse what is currently approved.
+      if (index === 0 && initialAllowance === quote.sourceAmount) return 0n
+      return (
+        (await publicClient.estimateContractGas({
+          account: account.address,
+          address: ARBITRUM_USDC,
+          abi: ERC20_ALLOWANCE_ABI,
+          functionName: 'approve',
+          args: [SQUID_ROUTER, quote.sourceAmount],
+        })) * gasPrice
+      )
+    })
+  )
+  const approvalGas = approvalCommitments.reduce((total, commitment) => total + commitment, 0n)
   const routeGas = quotes.reduce((total, quote) => total + quote.value + quote.gasLimit * quote.maxFeePerGas, 0n)
   const requiredNativeGas = routeGas + approvalGas
   if (requiredNativeGas > MAX_SOURCE_NATIVE_GAS || source.native < requiredNativeGas) {
@@ -342,7 +341,7 @@ export async function executeTokenAcquisition(options: ExecuteTokenAcquisitionOp
   const baseline = await options.getFilecoinBalances()
   let committedNativeGas = recoveredCheckpoint?.committedNativeGas ?? 0n
   const evidence: AcquisitionEvidence[] = [...priorEvidence]
-  for (const quote of quotes) {
+  for (const [index, quote] of quotes.entries()) {
     const preApprovalQuote = await options.refreshQuote(quote)
     assertFixedInputRefresh(quote, preApprovalQuote)
     const allowance = await publicClient.readContract({
@@ -351,8 +350,19 @@ export async function executeTokenAcquisition(options: ExecuteTokenAcquisitionOp
       functionName: 'allowance',
       args: [account.address, SQUID_ROUTER],
     })
+    const remainingCommitment = quotes
+      .slice(index + 1)
+      .reduce(
+        (total, remainingQuote, remainingIndex) =>
+          total +
+          remainingQuote.value +
+          remainingQuote.gasLimit * remainingQuote.maxFeePerGas +
+          (approvalCommitments[index + remainingIndex + 1] ?? 0n),
+        0n
+      )
+    let approval: { gasLimit: bigint; maxFeePerGas: bigint; nonce: number; commitment: bigint } | undefined
     if (allowance !== preApprovalQuote.sourceAmount) {
-      const [approvalGasLimit, approvalMaxFeePerGas, approvalNonce, currentNative] = await Promise.all([
+      const [gasLimit, maxFeePerGas, nonce] = await Promise.all([
         publicClient.estimateContractGas({
           account: account.address,
           address: ARBITRUM_USDC,
@@ -362,16 +372,32 @@ export async function executeTokenAcquisition(options: ExecuteTokenAcquisitionOp
         }),
         publicClient.getGasPrice(),
         publicClient.getTransactionCount({ address: account.address, blockTag: 'pending' }),
-        publicClient.getBalance({ address: account.address }),
       ])
-      const approvalCommitment = approvalGasLimit * approvalMaxFeePerGas
-      if (
-        !isWithinCumulativeSourceGasCap({
-          committedNativeGas,
-          nextCommitment: approvalCommitment,
-        }) ||
-        currentNative < approvalCommitment
-      ) {
+      approval = { gasLimit, maxFeePerGas, nonce, commitment: gasLimit * maxFeePerGas }
+    }
+    const preApprovalRouteCommitment =
+      preApprovalQuote.value + preApprovalQuote.gasLimit * preApprovalQuote.maxFeePerGas
+    const nativeBeforeSignature = await publicClient.getBalance({ address: account.address })
+    const reservedBeforeSignature = (approval?.commitment ?? 0n) + preApprovalRouteCommitment + remainingCommitment
+    if (
+      !isWithinCumulativeSourceGasCap({
+        committedNativeGas,
+        nextCommitment: reservedBeforeSignature,
+      }) ||
+      nativeBeforeSignature < reservedBeforeSignature
+    ) {
+      throw new Error(
+        'Refreshed acquisition route exceeds the approved source-native gas cap or current native balance'
+      )
+    }
+    if (approval != null) {
+      const {
+        gasLimit: approvalGasLimit,
+        maxFeePerGas: approvalMaxFeePerGas,
+        nonce: approvalNonce,
+        commitment: approvalCommitment,
+      } = approval
+      if (!isWithinCumulativeSourceGasCap({ committedNativeGas, nextCommitment: approvalCommitment })) {
         throw new Error('Approval exceeds the approved source-native gas cap or current native balance')
       }
       committedNativeGas += approvalCommitment
@@ -436,12 +462,13 @@ export async function executeTokenAcquisition(options: ExecuteTokenAcquisitionOp
       throw new Error('USDC allowance changed after approval; do not submit the source route')
     }
     const routeCommitment = refreshedQuote.value + refreshedQuote.gasLimit * refreshedQuote.maxFeePerGas
+    const reservedRouteCommitment = routeCommitment + remainingCommitment
     if (
       !isWithinCumulativeSourceGasCap({
         committedNativeGas,
-        nextCommitment: routeCommitment,
+        nextCommitment: reservedRouteCommitment,
       }) ||
-      remainingNative < routeCommitment
+      remainingNative < reservedRouteCommitment
     ) {
       throw new Error(
         'Refreshed acquisition route exceeds the approved source-native gas cap or current native balance'

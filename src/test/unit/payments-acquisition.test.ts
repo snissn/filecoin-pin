@@ -666,6 +666,55 @@ describe('wallet shortfall acquisition planning', () => {
     expect(store.value?.committedNativeGas).toBe(MAX_SOURCE_NATIVE_GAS - 10n)
   })
 
+  it('reserves known remaining commitments after a refreshed first leg before broadcasting it', async () => {
+    const first = {
+      ...executionQuote(),
+      id: 'first-refresh-reserve',
+      asset: 'fil' as const,
+      value: 0n,
+      gasLimit: 1n,
+      maxFeePerGas: MAX_SOURCE_NATIVE_GAS - 20n,
+    }
+    const second = {
+      ...executionQuote(),
+      id: 'second-refresh-reserve',
+      sourceAmount: 2n,
+      destinationAmount: 4n,
+      value: 0n,
+      gasLimit: 1n,
+      maxFeePerGas: 10n,
+    }
+    const sourceClient = {
+      getChainId: vi.fn().mockResolvedValue(42161),
+      getBalance: vi.fn().mockResolvedValue(MAX_SOURCE_NATIVE_GAS * 2n),
+      getGasPrice: vi.fn().mockResolvedValue(0n),
+      estimateContractGas: vi.fn().mockResolvedValue(0n),
+      readContract: vi.fn(async ({ functionName }: { functionName: string }) =>
+        functionName === 'balanceOf' ? 100n : first.sourceAmount
+      ),
+    } as unknown as PublicClient
+    const walletClient = { writeContract: vi.fn(), sendTransaction: vi.fn() }
+    const refreshedFirst = { ...first, maxFeePerGas: MAX_SOURCE_NATIVE_GAS - 5n }
+
+    await expect(
+      executeTokenAcquisition({
+        privateKey: PRIVATE_KEY,
+        sourceClient,
+        walletClient: walletClient as never,
+        quotes: [first, second],
+        refreshQuote: vi.fn().mockResolvedValue(refreshedFirst),
+        getProviderStatus: vi.fn(),
+        checkpointStore: emptyCheckpointStore(),
+        destinationChainId: 314,
+        getFilecoinBalances: vi.fn(),
+        waitForFilecoinArrival: vi.fn(),
+      })
+    ).rejects.toThrow('source-native gas cap')
+
+    expect(walletClient.writeContract).not.toHaveBeenCalled()
+    expect(walletClient.sendTransaction).not.toHaveBeenCalled()
+  })
+
   it('fails closed for concurrent acquisition ownership and releases only its own 0600 lock', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'filecoin-pin-acquisition-lock-'))
     try {
