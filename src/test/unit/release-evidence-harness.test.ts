@@ -214,7 +214,7 @@ describe('release evidence harness', () => {
         'if (artifactPath == null || !existsSync(artifactPath)) process.exit(21)',
         "const artifact = JSON.parse(readFileSync(artifactPath, 'utf8'))",
         "if (artifact.execution !== 'requested') process.exit(22)",
-        "console.log('private=' + process.env.PRIVATE_KEY + ' integrator=' + process.env.SQUID_INTEGRATOR_ID + ' rpc=' + process.env.RPC_URL)",
+        "console.log('private=' + process.env.PRIVATE_KEY + ' integrator=' + process.env.SQUID_INTEGRATOR_ID + ' rpc=' + process.env.RPC_URL + ' path=https://provider.example.test/v2/path-secret/status')",
         "console.error('source=' + process.env.SOURCE_RPC_URL)",
       ].join('\n')
     )
@@ -270,6 +270,7 @@ describe('release evidence harness', () => {
       'filecoin-token',
       'arb-password',
       'arb-token',
+      'path-secret',
     ]) {
       expect(artifactText).not.toContain(secret)
     }
@@ -277,5 +278,6 @@ describe('release evidence harness', () => {
     expect(artifactText).toContain('[redacted SQUID_INTEGRATOR_ID]')
     expect(artifactText).toContain('[redacted RPC_URL]')
     expect(artifactText).toContain('[redacted SOURCE_RPC_URL]')
+    expect(artifactText).toContain('[redacted URL]')
   })
 })

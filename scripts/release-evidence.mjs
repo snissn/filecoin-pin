@@ -152,15 +152,7 @@ function sanitizedText(value) {
     const secret = process.env[name]
     if (secret != null && secret !== '') result = result.replaceAll(secret, `[redacted ${name}]`)
   }
-  return result.replace(/\b(?:https?|wss?):\/\/[^\s'"`<>]+/giu, (url) => {
-    try {
-      const parsed = new URL(url)
-      if (parsed.username !== '' || parsed.password !== '' || parsed.search !== '') return '[redacted URL]'
-    } catch {
-      return '[redacted URL]'
-    }
-    return url
-  })
+  return result.replace(/\b(?:https?|wss?):\/\/[^\s'"`<>]+/giu, '[redacted URL]')
 }
 
 function defaultOutput(network, flow) {

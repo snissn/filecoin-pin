@@ -236,7 +236,7 @@ The source and Filecoin wallet must be controlled by the same private key. Keep 
 
 See the [payments acquisition route](documentation/payments-acquisition-route.md) for route caps, transaction stages, polling limits, and recovery, and the [release-evidence runbook](documentation/release-evidence/README.md) for safe evidence capture.
 
-The release-evidence harness writes a private, ignored run artifact under `artifacts/release-evidence/` by default. Its exact dry-run commands, build prerequisite, and promotion rules are in the [release-evidence runbook](documentation/release-evidence/README.md). On POSIX the artifact is created with mode `0600`; on Windows, rely on OS ACLs/defaults and choose a private output directory. Review and sanitize an artifact before promoting only verified, non-sensitive facts into a curated versioned evidence record; do not commit raw run artifacts.
+The release-evidence harness writes a private, ignored run artifact under `artifacts/release-evidence/` by default. Its exact dry-run commands, build prerequisite, and promotion rules are in the [release-evidence runbook](documentation/release-evidence/README.md). On POSIX the artifact is created with mode `0600`. Before any Windows mainnet run, choose an explicitly user-private output directory, restrict its ACL to the operator, and verify that another local user cannot read it. Review and sanitize an artifact before promoting only verified, non-sensitive facts into a curated versioned evidence record; do not commit raw run artifacts.
 
 For detailed guides, see:
 - **CLI**: [Complete CLI walkthrough](https://docs.filecoin.io/builder-cookbook/filecoin-pin/filecoin-pin-cli)
