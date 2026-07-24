@@ -138,7 +138,7 @@ function resolveSmokeReportOutput(value) {
     usage('--output must point outside the repository checkout')
     return undefined
   }
-  return output
+  return canonicalOutput
 }
 
 function canonicalizePotentialPath(path) {

@@ -207,7 +207,7 @@ status or destination balance is resolved.
 | local `foc-devnet` | mocked acquisition only | real local Filecoin Pay deposit and rerun behavior |
 | Calibration | unsupported; fail closed | real public-network direct USDFC deposit and Filecoin-side approval |
 | Squid/Tenderly fork | unavailable for this gate | the published legacy hostname did not resolve and no Filecoin fork endpoint was discoverable |
-| Filecoin mainnet | supported | real route execution remains a separately authorized, hard-capped smoke test |
+| Filecoin mainnet | supported | real route execution remains a separately authorized, hard-capped [payments smoke test](glossary.md#payments-smoke-test) |
 
 A fork would not replace the live smoke test even if one becomes available because it
 cannot prove live bridge delivery or production liquidity.
@@ -219,7 +219,7 @@ about 3.32 USDFC for two data sets under the test price model. The live probes
 showed that these outputs fit comfortably below 5 source USDC in total at the
 captured rates.
 
-The mainnet smoke test must use these hard maximums unless a separately reviewed update
+The [mainnet payments smoke test](glossary.md#payments-smoke-test) must use these hard maximums unless a separately reviewed update
 lowers or raises them:
 
 - **10 USDC total source-token spend** across both legs;
