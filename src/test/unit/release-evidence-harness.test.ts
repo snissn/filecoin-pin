@@ -8,6 +8,13 @@ const temporaryDirectories: string[] = []
 const temporaryProcesses: ChildProcessWithoutNullStreams[] = []
 const supportsPOSIXModes = process.platform !== 'win32'
 
+function harnessEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env = { ...process.env }
+  delete env.NETWORK
+  delete env.RPC_URL
+  return { ...env, ...overrides }
+}
+
 async function startRpcServer(chainId: number): Promise<string> {
   const script = [
     "import { createServer } from 'node:http'",
@@ -61,7 +68,7 @@ function runHarness(args: string[]): {
     [resolve('scripts/release-evidence.mjs'), ...args, '--output', outputPath],
     {
       encoding: 'utf8',
-      env: { ...process.env, SQUID_INTEGRATOR_ID: secret, PRIVATE_KEY: '0xtest-only-key' },
+      env: harnessEnv({ SQUID_INTEGRATOR_ID: secret, PRIVATE_KEY: '0xtest-only-key' }),
     }
   )
   return {
@@ -150,7 +157,7 @@ describe('release evidence harness', () => {
         '5',
         '--execute',
       ],
-      { encoding: 'utf8' }
+      { encoding: 'utf8', env: harnessEnv() }
     )
     const directory = mkdtempSync(join(tmpdir(), 'filecoin-pin-release-evidence-'))
     temporaryDirectories.push(directory)
@@ -171,7 +178,7 @@ describe('release evidence harness', () => {
         '--output',
         output,
       ],
-      { encoding: 'utf8' }
+      { encoding: 'utf8', env: harnessEnv() }
     )
 
     expect(missingTarget.status).toBe(1)
@@ -203,7 +210,7 @@ describe('release evidence harness', () => {
           '--output',
           output,
         ],
-        { encoding: 'utf8' }
+        { encoding: 'utf8', env: harnessEnv() }
       )
 
       expect(result.status).toBe(1)
@@ -228,9 +235,9 @@ describe('release evidence harness', () => {
       '--output',
       output,
     ]
-    const first = spawnSync(process.execPath, args, { encoding: 'utf8' })
+    const first = spawnSync(process.execPath, args, { encoding: 'utf8', env: harnessEnv() })
     const original = readFileSync(output, 'utf8')
-    const second = spawnSync(process.execPath, args, { encoding: 'utf8' })
+    const second = spawnSync(process.execPath, args, { encoding: 'utf8', env: harnessEnv() })
 
     expect(first.status).toBe(0)
     expect(second.status).toBe(1)
@@ -256,7 +263,7 @@ describe('release evidence harness', () => {
         '--output',
         output,
       ],
-      { encoding: 'utf8', env: { ...process.env, RPC_URL: rpcUrl } }
+      { encoding: 'utf8', env: harnessEnv({ RPC_URL: rpcUrl }) }
     )
 
     expect(result.status).toBe(1)
@@ -310,15 +317,14 @@ describe('release evidence harness', () => {
       {
         cwd: directory,
         encoding: 'utf8',
-        env: {
-          ...process.env,
+        env: harnessEnv({
           EVIDENCE_ARTIFACT: output,
           NETWORK: 'calibration',
           PRIVATE_KEY: '0xfake-private-key',
           RPC_URL: `${rpcUrl}/v2/filecoin-password/rpc?token=filecoin-token`,
           SOURCE_RPC_URL: 'https://arb-user:arb-password@example.test/rpc?token=arb-token',
           SQUID_INTEGRATOR_ID: 'fake-integrator-id',
-        },
+        }),
       }
     )
     const artifact = JSON.parse(readFileSync(output, 'utf8')) as Record<string, unknown>
