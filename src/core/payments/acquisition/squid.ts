@@ -223,6 +223,8 @@ export async function pollSquidStatus(
     { headers: { 'x-integrator-id': options.integratorId } },
     fetchFn
   )
+  // A just-submitted transaction may not be indexed by the provider yet. Keep it in bounded polling.
+  if (response.status === 404) return mapSquidStatus('not_found')
   if (!response.ok) throw providerError(`Squid status request failed (${response.status})`)
   const parsed = (await response.json()) as SquidStatusResponse
   return {

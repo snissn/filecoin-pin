@@ -330,6 +330,40 @@ describe('Squid acquisition provider contract', () => {
     expect(request.searchParams.get('requestId')).toBe('request & id')
   })
 
+  it('keeps an unindexed 404 status in bounded polling until the provider returns a terminal result', async () => {
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('', { status: 404 }))
+      .mockResolvedValueOnce(response({ squidTransactionStatus: 'success' }))
+    let now = 0
+    const wait = vi.fn(async (milliseconds: number) => {
+      now += milliseconds
+    })
+    const result = await waitForSquidTerminalStatus({
+      getStatus: () =>
+        pollSquidStatus(
+          { transactionId: 'source', fromChainId: '42161', toChainId: '314', quoteId: 'quote' },
+          { integratorId: 'test-only-integrator', fetchFn }
+        ),
+      now: () => now,
+      wait,
+    })
+
+    expect(result).toEqual({ status: 'confirmed' })
+    expect(fetchFn).toHaveBeenCalledTimes(2)
+    expect(wait).toHaveBeenCalledWith(5_000)
+
+    await expect(
+      pollSquidStatus(
+        { transactionId: 'source', fromChainId: '42161', toChainId: '314', quoteId: 'quote' },
+        {
+          integratorId: 'test-only-integrator',
+          fetchFn: vi.fn<typeof fetch>().mockResolvedValue(new Response('', { status: 500 })),
+        }
+      )
+    ).rejects.toThrow('status request failed (500)')
+  })
+
   it('polls through the greater of fifteen minutes or twice the route duration using the bounded cadence', async () => {
     let now = 0
     const wait = vi.fn(async (milliseconds: number) => {
