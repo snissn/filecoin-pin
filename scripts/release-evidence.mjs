@@ -139,7 +139,9 @@ function commandFor(options) {
   else if (options.amount != null) command.push('--amount', options.amount)
   else command.push('--days', options.days)
   if (options.mode != null) command.push('--mode', options.mode)
-  command.push('--network', options.network)
+  if (process.env.RPC_URL == null || process.env.RPC_URL.trim() === '') {
+    command.push('--network', options.network)
+  }
   if (options.network === 'mainnet') {
     command.push('--from-chain', 'arb', '--from-token', 'USDC', '--max-source-amount', options.sourceCap)
   }
@@ -180,7 +182,9 @@ async function updateArtifact(output, artifact) {
 
 async function run(command) {
   return await new Promise((resolveRun, rejectRun) => {
-    const child = spawn(command[0], command.slice(1), { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] })
+    const env = { ...process.env }
+    if (env.RPC_URL != null && env.RPC_URL.trim() !== '') delete env.NETWORK
+    const child = spawn(command[0], command.slice(1), { env, stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', (chunk) => {

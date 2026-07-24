@@ -214,6 +214,8 @@ describe('release evidence harness', () => {
         'if (artifactPath == null || !existsSync(artifactPath)) process.exit(21)',
         "const artifact = JSON.parse(readFileSync(artifactPath, 'utf8'))",
         "if (artifact.execution !== 'requested') process.exit(22)",
+        "if (process.argv.includes('--network')) process.exit(23)",
+        'if (process.env.NETWORK != null) process.exit(24)',
         "console.log('private=' + process.env.PRIVATE_KEY + ' integrator=' + process.env.SQUID_INTEGRATOR_ID + ' rpc=' + process.env.RPC_URL + ' path=https://provider.example.test/v2/path-secret/status')",
         "console.error('source=' + process.env.SOURCE_RPC_URL)",
       ].join('\n')
@@ -241,6 +243,7 @@ describe('release evidence harness', () => {
         env: {
           ...process.env,
           EVIDENCE_ARTIFACT: output,
+          NETWORK: 'calibration',
           PRIVATE_KEY: '0xfake-private-key',
           RPC_URL: 'https://filecoin-user:filecoin-password@example.test/rpc?token=filecoin-token',
           SOURCE_RPC_URL: 'https://arb-user:arb-password@example.test/rpc?token=arb-token',
@@ -259,6 +262,7 @@ describe('release evidence harness', () => {
       sourceNativeGasCapArbitrumETH: '0.0001',
     })
     expect(artifact).toHaveProperty('completedAt')
+    expect(artifact.command).not.toContain('--network')
     if (supportsPOSIXModes) {
       expect(statSync(output).mode & 0o777).toBe(0o600)
       expect(statSync(outputDirectory).mode & 0o777).toBe(0o755)
