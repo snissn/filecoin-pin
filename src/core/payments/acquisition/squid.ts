@@ -9,6 +9,7 @@ import type {
 
 export const SQUID_API_URL = 'https://apiplus.squidrouter.com/v2'
 const MAX_RATE_LIMIT_RETRIES = 1
+const MAX_ESTIMATED_ROUTE_DURATION_SECONDS = 30 * 60
 
 export interface SquidRouteRequest {
   fromAddress: Address
@@ -246,7 +247,12 @@ export async function waitForSquidTerminalStatus(options: {
   const now = options.now ?? Date.now
   const wait = options.wait ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)))
   const start = now()
-  const timeout = Math.max(15 * 60_000, (options.estimatedRouteDurationSeconds ?? 0) * 2_000)
+  const requestedDuration = options.estimatedRouteDurationSeconds ?? 0
+  const estimatedRouteDurationSeconds =
+    Number.isFinite(requestedDuration) && requestedDuration > 0
+      ? Math.min(requestedDuration, MAX_ESTIMATED_ROUTE_DURATION_SECONDS)
+      : 0
+  const timeout = Math.max(15 * 60_000, estimatedRouteDurationSeconds * 2_000)
   let current: { status: AcquisitionExecutionStatus; errorCode?: AcquisitionErrorCode } = {
     status: 'submitted',
     errorCode: 'timed-out',

@@ -387,6 +387,25 @@ describe('Squid acquisition provider contract', () => {
     expect(now).toBe(900_000)
   })
 
+  it('caps a malformed provider route duration at one hour of status polling', async () => {
+    let now = 0
+    const wait = vi.fn(async (milliseconds: number) => {
+      now += milliseconds
+    })
+
+    await expect(
+      waitForSquidTerminalStatus({
+        getStatus: vi.fn(async () => ({ status: 'submitted' as const })),
+        estimatedRouteDurationSeconds: Number.MAX_SAFE_INTEGER,
+        now: () => now,
+        wait,
+      })
+    ).resolves.toEqual({ status: 'submitted' })
+
+    expect(now).toBe(3_600_000)
+    expect(wait).toHaveBeenLastCalledWith(15_000)
+  })
+
   it('fails closed on Calibration before a provider request can be made', async () => {
     const fetchFn = vi.fn<typeof fetch>()
     await expect(
