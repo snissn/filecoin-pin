@@ -11,6 +11,7 @@ import {
 import {
   parseMaximumSourceAmount,
   planTokenAcquisition,
+  refreshFixedInputAcquisitionQuote,
   totalSourceAmount,
   validateMaximumSourceSpend,
 } from './plan.js'
@@ -207,17 +208,13 @@ export async function ensureWalletReadyForFilecoinTransactions(
       refreshQuote: async (quote) => {
         const leg = plan.legs.find((candidate) => candidate.asset === quote.asset)
         if (leg == null) throw new Error('Acquisition quote does not match a planned wallet shortfall')
-        const refreshed = await planTokenAcquisition({
-          plan: { ...plan, legs: [leg] },
-          owner: sourceAddressForPrivateKey(privateKey),
-          maxSourceAmount: quote.sourceAmount,
+        return refreshFixedInputAcquisitionQuote({
+          quote,
+          leg,
+          owner: sourceOwner,
           slippage: options.slippage ?? 1,
           provider: options.provider,
-          initialSourceAmount: quote.sourceAmount,
         })
-        const current = refreshed[0]
-        if (current == null) throw new Error('Squid route refresh returned no route')
-        return current
       },
       getProviderStatus: async (current) => {
         if (current.sourceTransactionHash == null) {

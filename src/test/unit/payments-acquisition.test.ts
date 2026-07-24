@@ -27,6 +27,7 @@ import {
 import {
   parseMaximumSourceAmount,
   planTokenAcquisition,
+  refreshFixedInputAcquisitionQuote,
   validateMaximumSourceSpend,
 } from '../../core/payments/acquisition/plan.js'
 import { FILECOIN_USDFC, resolveSourceToken } from '../../core/payments/acquisition/source-assets.js'
@@ -951,6 +952,61 @@ describe('wallet shortfall acquisition planning', () => {
     expect(plan.usdfcShortfall).toBe(2_000_000_000_000_000_000n)
     expect(quotes).toHaveLength(1)
     expect(quotes[0]?.sourceAmount).toBe(1_000_000n)
+  })
+
+  it('refreshes a route once at its original fixed source input', async () => {
+    const sourceAmount = 500_000n
+    const leg: AcquisitionLeg = { asset: 'usdfc', amount: 2_000_000_000_000_000_000n, source: supportedSource() }
+    const quote: PlannedAcquisitionQuote = {
+      ...executionQuote(),
+      asset: 'usdfc',
+      sourceAmount,
+      destinationAmount: leg.amount,
+    }
+    const fixture = await routeFixture('squid-route-usdfc.json')
+    setFixtureSourceAmount(fixture, sourceAmount)
+    fixture.route.estimate.toAmountMin = leg.amount.toString()
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(response(fixture))
+
+    await expect(
+      refreshFixedInputAcquisitionQuote({
+        quote,
+        leg,
+        owner: OWNER,
+        slippage: 1,
+        provider: { integratorId: 'test-only-integrator', fetchFn, now: () => 1_700_000_000_000 },
+      })
+    ).resolves.toMatchObject({ sourceAmount, destinationAmount: leg.amount })
+
+    expect(fetchFn).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body))).toMatchObject({ fromAmount: sourceAmount.toString() })
+  })
+
+  it('does not scale or re-quote when a fixed-input refresh no longer covers its wallet shortfall', async () => {
+    const sourceAmount = 500_000n
+    const leg: AcquisitionLeg = { asset: 'usdfc', amount: 2_000_000_000_000_000_000n, source: supportedSource() }
+    const quote: PlannedAcquisitionQuote = {
+      ...executionQuote(),
+      asset: 'usdfc',
+      sourceAmount,
+      destinationAmount: leg.amount,
+    }
+    const fixture = await routeFixture('squid-route-usdfc.json')
+    setFixtureSourceAmount(fixture, sourceAmount)
+    fixture.route.estimate.toAmountMin = (leg.amount - 1n).toString()
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(response(fixture))
+
+    await expect(
+      refreshFixedInputAcquisitionQuote({
+        quote,
+        leg,
+        owner: OWNER,
+        slippage: 1,
+        provider: { integratorId: 'test-only-integrator', fetchFn, now: () => 1_700_000_000_000 },
+      })
+    ).rejects.toThrow('no longer covers the planned wallet shortfall')
+
+    expect(fetchFn).toHaveBeenCalledTimes(1)
   })
 
   it('retries a zero-output seed quote and rejects repeated zero outputs with a clear acquisition error', async () => {

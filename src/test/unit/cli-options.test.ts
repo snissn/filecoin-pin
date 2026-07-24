@@ -188,6 +188,26 @@ describe('funding-source option environment bindings', () => {
     expect(command.opts()).not.toHaveProperty('maxSourceAmount')
   })
 
+  it('maps source selection and a positive maximum source amount through Commander', () => {
+    const command = addFundingSourceOptions(new Command()).exitOverride()
+
+    command.parse(['--from-chain', 'arb', '--from-token', 'USDC', '--max-source-amount', '1.25'], { from: 'user' })
+
+    expect(command.opts()).toMatchObject({
+      fromChain: 'arb',
+      fromToken: 'USDC',
+      maxSourceAmount: '1.25',
+    })
+  })
+
+  it.each(['0', '-1', 'not-a-number'])('rejects invalid --max-source-amount %s during Commander parsing', (value) => {
+    const command = addFundingSourceOptions(new Command()).exitOverride()
+
+    expect(() => command.parse(['--max-source-amount', value], { from: 'user' })).toThrow(
+      'Amount must be a positive decimal value'
+    )
+  })
+
   it('accepts only Squid\'s inclusive provider slippage range', () => {
     expect(parseSlippageOption('0.01')).toBe(0.01)
     expect(parseSlippageOption('99.99')).toBe(99.99)

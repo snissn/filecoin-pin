@@ -27,6 +27,14 @@ export interface PlanTokenAcquisitionOptions {
   initialSourceAmount?: bigint
 }
 
+export interface RefreshFixedInputAcquisitionQuoteOptions {
+  quote: PlannedAcquisitionQuote
+  leg: AcquisitionLeg
+  owner: `0x${string}`
+  slippage: number
+  provider: SquidProviderOptions
+}
+
 /**
  * Find fixed source inputs that meet exact downstream shortfalls without
  * estimating Filecoin pricing. Every returned quote is independently
@@ -48,6 +56,39 @@ export async function planTokenAcquisition(options: PlanTokenAcquisitionOptions)
     quotes.push(quote)
   }
   return quotes
+}
+
+/**
+ * Re-fetch one executable route after an approval without changing its fixed
+ * source input. Refreshes never use output-driven planning because an approval
+ * may already exist for the original source-token amount.
+ */
+export async function refreshFixedInputAcquisitionQuote(
+  options: RefreshFixedInputAcquisitionQuoteOptions
+): Promise<PlannedAcquisitionQuote> {
+  if (options.quote.asset !== options.leg.asset) {
+    throw new Error('Acquisition quote does not match a planned wallet shortfall')
+  }
+  const refreshed = await getSquidRoute(
+    {
+      fromAddress: options.owner,
+      sourceAmount: options.quote.sourceAmount,
+      leg: options.leg,
+      slippage: options.slippage,
+    },
+    options.provider
+  )
+  if (refreshed.destinationAmount < options.leg.amount) {
+    throw new Error('Squid route refresh no longer covers the planned wallet shortfall; do not submit the route')
+  }
+  if (
+    refreshed.asset !== options.quote.asset ||
+    refreshed.sourceAmount !== options.quote.sourceAmount ||
+    refreshed.destinationAmount < options.quote.destinationAmount
+  ) {
+    throw new Error('Squid route changed after refresh; do not submit the route')
+  }
+  return refreshed
 }
 
 async function planLeg(leg: AcquisitionLeg, options: PlanTokenAcquisitionOptions): Promise<PlannedAcquisitionQuote> {
