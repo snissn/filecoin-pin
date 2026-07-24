@@ -394,14 +394,20 @@ describe('runFund confirmation exit codes', () => {
     expect(output).not.toContain('Squid fallback')
   })
 
-  it('redacts keyed source and Filecoin RPC URLs from viem-style errors and CliFatal', async () => {
+  it('redacts configured and credential-bearing RPC URLs and private keys while preserving public help links', async () => {
     const sourceRpcUrl = 'https://arbitrum.example/rpc?apiKey=source-secret'
     const rpcUrl = 'https://filecoin.example/rpc?token=filecoin-secret'
+    const privateKey = '0x0000000000000000000000000000000000000000000000000000000000000001'
+    const publicBridgeUrl = 'https://app.usdfc.net/#/bridge'
+    const publicFaucetUrl = 'https://faucet.calibnet.chainsafe-fil.io/'
+    const unconfiguredCredentialUrl = 'https://provider.example/rpc?access_key=unconfigured-secret'
     const planned = planResult(5_000_000_000_000_000_000n)
     planned.status = { walletUsdfcBalance: 0n, filBalance: 0n }
     mockPlan.mockResolvedValueOnce(planned)
     mockEnsureWallet.mockRejectedValueOnce(
-      new Error(`HTTP 429 from viem\nURL: ${sourceRpcUrl}\nRequest URL: ${rpcUrl}`)
+      new Error(
+        `HTTP 429 from viem\nBridge: ${publicBridgeUrl}\nFaucet: ${publicFaucetUrl}\nURL: ${sourceRpcUrl}\nRequest URL: ${rpcUrl}\nProvider URL: ${unconfiguredCredentialUrl}\nPrivate key: ${privateKey}`
+      )
     )
 
     const failure = await runFund({
@@ -411,12 +417,16 @@ describe('runFund confirmation exit codes', () => {
       maxSourceAmount: '10',
       sourceRpcUrl,
       rpcUrl,
-      privateKey: '0x0000000000000000000000000000000000000000000000000000000000000001',
+      privateKey,
     }).catch((error: unknown) => error)
     expect(failure).toBeInstanceOf(Error)
     expect((failure as Error).message).toContain('HTTP 429 from viem')
     expect((failure as Error).message).not.toContain(sourceRpcUrl)
     expect((failure as Error).message).not.toContain(rpcUrl)
+    expect((failure as Error).message).not.toContain(unconfiguredCredentialUrl)
+    expect((failure as Error).message).not.toContain(privateKey)
+    expect((failure as Error).message).toContain(publicBridgeUrl)
+    expect((failure as Error).message).toContain(publicFaucetUrl)
     expect((failure as Error).cause).toBeUndefined()
 
     const output = mockLogLine.mock.calls.flat().join('\n')
@@ -424,6 +434,8 @@ describe('runFund confirmation exit codes', () => {
     expect(output).not.toContain(rpcUrl)
     expect(output).not.toContain('source-secret')
     expect(output).not.toContain('filecoin-secret')
+    expect(output).not.toContain('unconfigured-secret')
+    expect(output).not.toContain(privateKey)
   })
 
   it('prints sanitized confirmed acquisition evidence before the existing Filecoin Pay deposit confirmation', async () => {

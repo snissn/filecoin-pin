@@ -115,13 +115,34 @@ function directFundingRecoveryNote(): string {
   return 'Token acquisition is available only on Filecoin mainnet. Fund this wallet with FIL and USDFC directly, then retry only the Filecoin Pay deposit without --from-* acquisition flags. Supply RPC_URL through the environment or CLI flag if needed.'
 }
 
-/** RPC failures can include endpoint URLs (and embedded API keys) in viem's message fields. */
+function isCredentialBearingUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    if (url.username !== '' || url.password !== '') return true
+    return [...url.searchParams.keys()].some((key) =>
+      /(?:access[-_]?key|api[-_]?key|auth|credential|key|password|secret|signature|token)/iu.test(key)
+    )
+  } catch {
+    return false
+  }
+}
+
+/** RPC failures can include configured endpoints, credentials, or private keys in viem's message fields. */
 function sanitizeRpcErrorMessage(message: string, options: FundOptions): string {
   let sanitized = message
-  for (const endpoint of [options.sourceRpcUrl, options.rpcUrl]) {
-    if (endpoint != null && endpoint !== '') sanitized = sanitized.replaceAll(endpoint, '[redacted RPC URL]')
+  const privateKey = options.privateKey
+  const redactedValues = [
+    options.sourceRpcUrl,
+    options.rpcUrl,
+    privateKey,
+    ...(privateKey != null && privateKey !== '' && !privateKey.startsWith('0x') ? [`0x${privateKey}`] : []),
+  ]
+  for (const value of redactedValues) {
+    if (value != null && value !== '') sanitized = sanitized.replaceAll(value, '[redacted secret]')
   }
-  return sanitized.replace(/\b(?:https?|wss?):\/\/[^\s'"`<>]+/giu, '[redacted RPC URL]')
+  return sanitized.replace(/\b(?:https?|wss?):\/\/[^\s'"`<>]+/giu, (url) =>
+    isCredentialBearingUrl(url) ? '[redacted credential-bearing URL]' : url
+  )
 }
 
 /** A source acquisition must fund the same EVM wallet that owns the Filecoin Pay account. */
