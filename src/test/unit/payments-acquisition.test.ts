@@ -1,3 +1,4 @@
+import { createServer } from 'node:http'
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -19,7 +20,10 @@ import {
   sourceAddressForPrivateKey,
   waitForFilecoinWalletReadiness,
 } from '../../core/payments/acquisition/execute.js'
-import { ensureWalletReadyForFilecoinTransactions } from '../../core/payments/acquisition/orchestrate.js'
+import {
+  ensureWalletReadyForFilecoinTransactions,
+  type SourceAcquisitionConfirmation,
+} from '../../core/payments/acquisition/orchestrate.js'
 import {
   parseMaximumSourceAmount,
   planTokenAcquisition,
@@ -586,6 +590,150 @@ describe('Squid acquisition provider contract', () => {
 
       expect(fetchFn).not.toHaveBeenCalled()
     } finally {
+      if (originalHome == null) delete process.env.HOME
+      else process.env.HOME = originalHome
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('confirms a newly planned quote before continuing a partial checkpoint recovery', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'filecoin-pin-acquisition-home-'))
+    const originalHome = process.env.HOME
+    process.env.HOME = directory
+    try {
+      const owner = sourceAddressForPrivateKey(PRIVATE_KEY)
+      const store = createAcquisitionCheckpointStore(owner)
+      await store.save({
+        version: 1,
+        owner,
+        sourceChainId: 42161,
+        destinationChainId: 314,
+        committedNativeGas: 1n,
+        requiredWallet: { fil: 100_000_000_000_000_000n, usdfc: 1n },
+        evidence: [
+          {
+            asset: 'fil',
+            quoteId: 'completed-fil-route',
+            sourceAmount: '1',
+            sourceTransactionHash: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            status: 'confirmed',
+          },
+        ],
+      })
+      const fixture = await routeFixture('squid-route-usdfc.json')
+      fixture.route.params.fromAddress = owner
+      fixture.route.params.toAddress = owner
+      fixture.route.transactionRequest.expiry = '2000000000'
+      setFixtureSourceAmount(fixture, 500_000n)
+      const confirmation = vi.fn(async (_summary: SourceAcquisitionConfirmation) => {
+        throw new Error('confirmation reached before execution')
+      })
+
+      await expect(
+        ensureWalletReadyForFilecoinTransactions({
+          destinationChainId: 314,
+          walletUsdfcBalance: 0n,
+          walletFilBalance: 100_000_000_000_000_000n,
+          requiredUsdfc: 1n,
+          fromChain: 'arb',
+          fromToken: 'USDC',
+          maxSourceAmount: '10',
+          privateKey: PRIVATE_KEY,
+          provider: {
+            integratorId: 'test-only-integrator',
+            fetchFn: vi.fn<typeof fetch>().mockResolvedValue(response(fixture)),
+          },
+          confirmSourceAcquisition: confirmation,
+          rereadWalletBalances: vi.fn(),
+        })
+      ).rejects.toThrow('confirmation reached before execution')
+
+      expect(confirmation).toHaveBeenCalledOnce()
+      expect(confirmation).toHaveBeenCalledWith({
+        sourceAmount: 500_000n,
+        maxSourceAmount: 9_999_999n,
+        legs: [
+          {
+            asset: 'usdfc',
+            minimumDestinationAmount: 4_894_083_014_213_259_056n,
+            expiresAt: 2_000_000_000,
+          },
+        ],
+      })
+      await expect(store.load()).resolves.toMatchObject({ evidence: [{ asset: 'fil' }] })
+    } finally {
+      if (originalHome == null) delete process.env.HOME
+      else process.env.HOME = originalHome
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('does not confirm while resuming a completed checkpoint with no new quotes', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'filecoin-pin-acquisition-home-'))
+    const originalHome = process.env.HOME
+    process.env.HOME = directory
+    const sourceRpc = createServer((request, response) => {
+      let body = ''
+      request.on('data', (chunk) => {
+        body += String(chunk)
+      })
+      request.on('end', () => {
+        const { id } = JSON.parse(body) as { id: number | string }
+        response.writeHead(200, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({ jsonrpc: '2.0', id, result: '0xa4b1' }))
+      })
+    })
+    await new Promise<void>((resolve) => sourceRpc.listen(0, '127.0.0.1', resolve))
+    const address = sourceRpc.address()
+    if (address == null || typeof address === 'string') throw new Error('test source RPC did not bind a TCP port')
+    try {
+      const owner = sourceAddressForPrivateKey(PRIVATE_KEY)
+      const store = createAcquisitionCheckpointStore(owner)
+      await store.save({
+        version: 1,
+        owner,
+        sourceChainId: 42161,
+        destinationChainId: 314,
+        committedNativeGas: 1n,
+        requiredWallet: { fil: 100_000_000_000_000_000n, usdfc: 1n },
+        evidence: [
+          {
+            asset: 'usdfc',
+            quoteId: 'completed-usdfc-route',
+            sourceAmount: '1',
+            sourceTransactionHash: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            status: 'submitted',
+          },
+        ],
+      })
+      const confirmation = vi.fn(async (_summary: SourceAcquisitionConfirmation) => undefined)
+      const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(response({ squidTransactionStatus: 'success' }))
+      const rereadWalletBalances = vi.fn(async () => ({ fil: 100_000_000_000_000_000n, usdfc: 1n }))
+
+      await expect(
+        ensureWalletReadyForFilecoinTransactions({
+          destinationChainId: 314,
+          walletUsdfcBalance: 0n,
+          walletFilBalance: 100_000_000_000_000_000n,
+          requiredUsdfc: 1n,
+          fromChain: 'arb',
+          fromToken: 'USDC',
+          maxSourceAmount: '10',
+          sourceRpcUrl: `http://127.0.0.1:${address.port}`,
+          privateKey: PRIVATE_KEY,
+          provider: { integratorId: 'test-only-integrator', fetchFn },
+          confirmSourceAcquisition: confirmation,
+          rereadWalletBalances,
+        })
+      ).resolves.toMatchObject([{ asset: 'usdfc', status: 'confirmed' }])
+
+      expect(confirmation).not.toHaveBeenCalled()
+      expect(fetchFn).toHaveBeenCalledOnce()
+      await expect(store.load()).resolves.toBeUndefined()
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        sourceRpc.close((error) => (error == null ? resolve() : reject(error)))
+      )
       if (originalHome == null) delete process.env.HOME
       else process.env.HOME = originalHome
       await rm(directory, { recursive: true, force: true })

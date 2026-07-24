@@ -156,11 +156,12 @@ export async function ensureWalletReadyForFilecoinTransactions(
     if (priorSourceAmount > maximumSourceAmount) {
       throw new Error('Acquisition recovery state exceeds --max-source-amount; do not submit another route')
     }
+    const remainingSourceAmount = maximumSourceAmount - priorSourceAmount
     const quotes = needsRoutePlanning
       ? await planTokenAcquisition({
           plan: remainingPlan,
           owner: sourceOwner,
-          maxSourceAmount: maximumSourceAmount - priorSourceAmount,
+          maxSourceAmount: remainingSourceAmount,
           slippage: options.slippage ?? 1,
           provider: options.provider,
         })
@@ -168,13 +169,13 @@ export async function ensureWalletReadyForFilecoinTransactions(
     if (needsRoutePlanning) {
       validateMaximumSourceSpend({
         quotes,
-        maxSourceAmount: maximumSourceAmount - priorSourceAmount,
+        maxSourceAmount: remainingSourceAmount,
         maxNativeGas: MAX_SOURCE_NATIVE_GAS,
       })
-      if (pending == null && quotes.length > 0) {
+      if (quotes.length > 0) {
         await options.confirmSourceAcquisition?.({
           sourceAmount: totalSourceAmount(quotes),
-          maxSourceAmount: parseMaximumSourceAmount(options.maxSourceAmount) as bigint,
+          maxSourceAmount: remainingSourceAmount,
           legs: quotes.map((quote) => ({
             asset: quote.asset,
             minimumDestinationAmount: quote.destinationAmount,
