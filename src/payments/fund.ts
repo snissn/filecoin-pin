@@ -171,6 +171,12 @@ function acquisitionEvidenceLines(evidence: AcquisitionEvidence[]): string[] {
   })
 }
 
+function throwDisplayedFatal(message: string): never {
+  log.line(pc.red(`Error: ${message}`))
+  log.flush()
+  throw new CliFatal(message)
+}
+
 // Helper: perform deposit or withdraw according to delta
 async function performAdjustment(params: {
   synapse: Synapse
@@ -360,10 +366,10 @@ export async function runFund(options: FundOptions): Promise<void> {
     (value) => value != null
   ).length
   if (sourceOptionCount > 0 && sourceOptionCount !== 3) {
-    throw new CliFatal('Acquisition requires --from-chain, --from-token, and --max-source-amount together')
+    throwDisplayedFatal('Acquisition requires --from-chain, --from-token, and --max-source-amount together')
   }
   if (options.slippage != null && sourceOptionCount !== 3) {
-    throw new CliFatal('Acquisition requires --from-chain, --from-token, and --max-source-amount together')
+    throwDisplayedFatal('Acquisition requires --from-chain, --from-token, and --max-source-amount together')
   }
   spinner.start('Connecting...')
   try {
@@ -467,7 +473,7 @@ export async function runFund(options: FundOptions): Promise<void> {
     }
 
     if (plan.delta > 0n && acquisitionRequested && 'readOnly' in authConfig && authConfig.readOnly === true) {
-      throw new CliFatal('Token acquisition requires signing auth; --view-address is read-only')
+      throwDisplayedFatal('Token acquisition requires signing auth; --view-address is read-only')
     }
 
     if (plan.delta > 0n && acquisitionRequested) {

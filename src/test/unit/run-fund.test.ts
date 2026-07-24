@@ -7,6 +7,7 @@ const {
   mockConfirm,
   mockIsCancel,
   mockCancel,
+  mockLogFlush,
   mockLogLine,
   mockLogSection,
   mockPlan,
@@ -20,6 +21,7 @@ const {
   mockConfirm: vi.fn(),
   mockIsCancel: vi.fn(() => false),
   mockCancel: vi.fn(),
+  mockLogFlush: vi.fn(),
   mockLogLine: vi.fn(),
   mockLogSection: vi.fn(),
   mockPlan: vi.fn(),
@@ -56,7 +58,7 @@ vi.mock('../../utils/cli-helpers.js', () => ({
 }))
 vi.mock('../../utils/cli-logger.js', () => ({
   isTTY: vi.fn(() => true),
-  log: { line: mockLogLine, section: mockLogSection, indent: vi.fn(), flush: vi.fn() },
+  log: { line: mockLogLine, section: mockLogSection, indent: vi.fn(), flush: mockLogFlush },
 }))
 vi.mock('../../core/payments/index.js', () => ({
   DEFAULT_LOCKUP_DAYS: 30,
@@ -333,7 +335,7 @@ describe('runFund confirmation exit codes', () => {
     expect(mockDeposit).not.toHaveBeenCalled()
   })
 
-  it('rejects parsed view-only auth before source acquisition or a Filecoin Pay deposit', async () => {
+  it('visibly rejects parsed view-only auth before source acquisition or a Filecoin Pay deposit', async () => {
     const planned = planResult(5_000_000_000_000_000_000n)
     planned.status = { walletUsdfcBalance: 0n, filBalance: 0n }
     mockPlan.mockResolvedValueOnce(planned)
@@ -354,6 +356,9 @@ describe('runFund confirmation exit codes', () => {
     expect(mockEnsureWallet).not.toHaveBeenCalled()
     expect(mockConfirm).not.toHaveBeenCalled()
     expect(mockDeposit).not.toHaveBeenCalled()
+    const message = 'Token acquisition requires signing auth; --view-address is read-only'
+    expect(mockLogLine.mock.calls.flat().filter((line) => String(line).includes(message))).toHaveLength(1)
+    expect(mockLogFlush).toHaveBeenCalledTimes(1)
   })
 
   it('keeps an acquisition-configured read-only no-op free of signing work', async () => {
@@ -592,13 +597,19 @@ describe('runFund confirmation exit codes', () => {
     expect(mockEnsureWallet).not.toHaveBeenCalled()
   })
 
-  it('rejects standalone slippage and incomplete acquisition tuples', async () => {
-    await expect(runFund({ amount: '5', slippage: 1 })).rejects.toThrow(
-      'Acquisition requires --from-chain, --from-token, and --max-source-amount together'
-    )
-    await expect(
-      runFund({ amount: '5', fromChain: 'arb', sourceRpcUrl: 'https://ambient-source-rpc.example/rpc' })
-    ).rejects.toThrow('Acquisition requires --from-chain, --from-token, and --max-source-amount together')
+  it.each([
+    ['standalone slippage', { amount: '5', slippage: 1 }],
+    ['partial acquisition tuple', { amount: '5', fromChain: 'arb', sourceRpcUrl: 'https://ambient-source-rpc.example/rpc' }],
+  ])('visibly rejects %s before any provider, acquisition, or deposit work', async (_description, options) => {
+    const message = 'Acquisition requires --from-chain, --from-token, and --max-source-amount together'
+
+    await expect(runFund(options)).rejects.toThrow(message)
+
+    expect(mockLogLine.mock.calls.flat().filter((line) => String(line).includes(message))).toHaveLength(1)
+    expect(mockLogFlush).toHaveBeenCalledTimes(1)
     expect(mockInitialize).not.toHaveBeenCalled()
+    expect(mockEnsureWallet).not.toHaveBeenCalled()
+    expect(mockDeposit).not.toHaveBeenCalled()
+    expect(mockWithdraw).not.toHaveBeenCalled()
   })
 })
