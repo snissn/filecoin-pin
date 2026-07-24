@@ -1,5 +1,15 @@
 import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -113,6 +123,35 @@ describe('payments smoke test', () => {
     expect(`${repositoryLocalOutput.stdout}${repositoryLocalOutput.stderr}`).toContain(
       '--output must point outside the repository checkout'
     )
+    expect(existsSync(repositoryOutput)).toBe(false)
+  })
+
+  it.runIf(supportsPOSIXModes)('rejects an outside path that resolves through a symlink into the checkout', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'filecoin-pin-payments-smoke-test-'))
+    temporaryDirectories.push(directory)
+    const repositoryLink = join(directory, 'repository-link')
+    const repositoryOutput = resolve('payments-smoke-test-symlink-report-must-not-exist.json')
+    temporaryFiles.push(repositoryOutput)
+    symlinkSync(resolve('.'), repositoryLink, 'dir')
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        resolve('scripts/payments-smoke-test.mjs'),
+        '--network',
+        'devnet',
+        '--flow',
+        'setup',
+        '--deposit',
+        '1',
+        '--output',
+        join(repositoryLink, 'payments-smoke-test-symlink-report-must-not-exist.json'),
+      ],
+      { encoding: 'utf8', env: harnessEnv() }
+    )
+
+    expect(result.status).toBe(1)
+    expect(`${result.stdout}${result.stderr}`).toContain('--output must point outside the repository checkout')
     expect(existsSync(repositoryOutput)).toBe(false)
   })
 

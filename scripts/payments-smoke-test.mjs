@@ -7,7 +7,7 @@
  */
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { chmod, mkdir, rename, unlink, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { createPublicClient, http, webSocket } from 'viem'
@@ -15,7 +15,7 @@ import { createPublicClient, http, webSocket } from 'viem'
 const allowedNetworks = new Set(['devnet', 'calibration', 'mainnet'])
 const allowedFlows = new Set(['fund', 'setup'])
 const networkChainIds = { calibration: 314159, devnet: 31415926, mainnet: 314 }
-const repositoryRoot = resolve(import.meta.dirname, '..')
+const repositoryRoot = realpathSync(resolve(import.meta.dirname, '..'))
 const usdcBaseUnits = 1_000_000n
 const maxMainnetSourceCapUSDC = 10_000_000n
 
@@ -129,7 +129,8 @@ function resolveSmokeReportOutput(value) {
     return undefined
   }
   const output = resolve(value)
-  const relativeOutput = relative(repositoryRoot, output)
+  const canonicalOutput = canonicalizePotentialPath(output)
+  const relativeOutput = relative(repositoryRoot, canonicalOutput)
   const isInsideRepository =
     relativeOutput === '' ||
     (relativeOutput !== '..' && !relativeOutput.startsWith(`..${sep}`) && !isAbsolute(relativeOutput))
@@ -138,6 +139,16 @@ function resolveSmokeReportOutput(value) {
     return undefined
   }
   return output
+}
+
+function canonicalizePotentialPath(path) {
+  let existingAncestor = path
+  while (!existsSync(existingAncestor)) {
+    const parent = dirname(existingAncestor)
+    if (parent === existingAncestor) break
+    existingAncestor = parent
+  }
+  return resolve(realpathSync(existingAncestor), relative(existingAncestor, path))
 }
 
 function isPositiveDecimal(value) {
