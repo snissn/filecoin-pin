@@ -402,6 +402,147 @@ describe('Squid acquisition provider contract', () => {
     expect(fetchFn).not.toHaveBeenCalled()
   })
 
+  it('clears a compatible route checkpoint when delayed Filecoin arrival makes a retry ready', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'filecoin-pin-acquisition-home-'))
+    const originalHome = process.env.HOME
+    process.env.HOME = directory
+    try {
+      const owner = sourceAddressForPrivateKey(PRIVATE_KEY)
+      const store = createAcquisitionCheckpointStore(owner)
+      await store.save({
+        version: 1,
+        owner,
+        sourceChainId: 42161,
+        destinationChainId: 314,
+        committedNativeGas: 1n,
+        requiredWallet: { fil: 100_000_000_000_000_000n, usdfc: 1n },
+        evidence: [
+          {
+            asset: 'usdfc',
+            quoteId: 'delayed-arrival-route',
+            sourceAmount: '1',
+            sourceTransactionHash: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            status: 'submitted',
+          },
+        ],
+      })
+      const fetchFn = vi.fn<typeof fetch>()
+
+      await expect(
+        ensureWalletReadyForFilecoinTransactions({
+          destinationChainId: 314,
+          walletUsdfcBalance: 1n,
+          walletFilBalance: 100_000_000_000_000_000n,
+          requiredUsdfc: 1n,
+          fromChain: 'arb',
+          fromToken: 'USDC',
+          maxSourceAmount: '1',
+          privateKey: PRIVATE_KEY,
+          provider: { integratorId: undefined, fetchFn },
+          rereadWalletBalances: vi.fn(),
+        })
+      ).resolves.toEqual([])
+
+      await expect(store.load()).resolves.toBeUndefined()
+      expect(fetchFn).not.toHaveBeenCalled()
+    } finally {
+      if (originalHome == null) delete process.env.HOME
+      else process.env.HOME = originalHome
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps a foreign checkpoint when a ready retry cannot safely recover it', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'filecoin-pin-acquisition-home-'))
+    const originalHome = process.env.HOME
+    process.env.HOME = directory
+    try {
+      const owner = sourceAddressForPrivateKey(PRIVATE_KEY)
+      const store = createAcquisitionCheckpointStore(owner)
+      await store.save({
+        version: 1,
+        owner: OWNER,
+        sourceChainId: 42161,
+        destinationChainId: 314,
+        committedNativeGas: 1n,
+        requiredWallet: { fil: 100_000_000_000_000_000n, usdfc: 1n },
+        evidence: [],
+      })
+
+      await expect(
+        ensureWalletReadyForFilecoinTransactions({
+          destinationChainId: 314,
+          walletUsdfcBalance: 1n,
+          walletFilBalance: 100_000_000_000_000_000n,
+          requiredUsdfc: 1n,
+          fromChain: 'arb',
+          fromToken: 'USDC',
+          maxSourceAmount: '1',
+          privateKey: PRIVATE_KEY,
+          provider: { integratorId: undefined },
+          rereadWalletBalances: vi.fn(),
+        })
+      ).resolves.toEqual([])
+
+      await expect(store.load()).resolves.toMatchObject({ owner: OWNER })
+    } finally {
+      if (originalHome == null) delete process.env.HOME
+      else process.env.HOME = originalHome
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps a compatible pre-broadcast route intent for duplicate-spend recovery', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'filecoin-pin-acquisition-home-'))
+    const originalHome = process.env.HOME
+    process.env.HOME = directory
+    try {
+      const owner = sourceAddressForPrivateKey(PRIVATE_KEY)
+      const store = createAcquisitionCheckpointStore(owner)
+      await store.save({
+        version: 1,
+        owner,
+        sourceChainId: 42161,
+        destinationChainId: 314,
+        committedNativeGas: 1n,
+        routeIntent: {
+          nonce: 8,
+          quoteId: 'route-without-hash',
+          asset: 'usdfc',
+          sourceAmount: '1',
+          target: '0xce16F69375520ab01377ce7B88f5BA8C48F8D666',
+          dataHash: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          value: '0',
+          gasLimit: '1',
+          maxFeePerGas: '1',
+        },
+        requiredWallet: { fil: 100_000_000_000_000_000n, usdfc: 1n },
+        evidence: [],
+      })
+
+      await expect(
+        ensureWalletReadyForFilecoinTransactions({
+          destinationChainId: 314,
+          walletUsdfcBalance: 1n,
+          walletFilBalance: 100_000_000_000_000_000n,
+          requiredUsdfc: 1n,
+          fromChain: 'arb',
+          fromToken: 'USDC',
+          maxSourceAmount: '1',
+          privateKey: PRIVATE_KEY,
+          provider: { integratorId: undefined },
+          rereadWalletBalances: vi.fn(),
+        })
+      ).resolves.toEqual([])
+
+      await expect(store.load()).resolves.toMatchObject({ routeIntent: expect.any(Object) })
+    } finally {
+      if (originalHome == null) delete process.env.HOME
+      else process.env.HOME = originalHome
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   it('fails closed on a durable pre-broadcast intent before requesting a new provider quote', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'filecoin-pin-acquisition-home-'))
     const originalHome = process.env.HOME

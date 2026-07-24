@@ -1,7 +1,7 @@
 import { mainnet } from '../../synapse/index.js'
 import { MIN_FIL_FOR_GAS } from '../constants.js'
 import { planWalletFunding } from '../wallet-funding.js'
-import { acquireAcquisitionLock, createAcquisitionCheckpointStore } from './checkpoint.js'
+import { type AcquisitionCheckpoint, acquireAcquisitionLock, createAcquisitionCheckpointStore } from './checkpoint.js'
 import {
   executeTokenAcquisition,
   MAX_SOURCE_NATIVE_GAS,
@@ -52,6 +52,59 @@ export interface SourceAcquisitionConfirmation {
   legs: Array<{ asset: 'fil' | 'usdfc'; minimumDestinationAmount: bigint; expiresAt: number }>
 }
 
+/**
+ * A ready retry may observe balances that arrived after an earlier command
+ * timed out. Clear only state that belongs to this exact acquisition and has
+ * no unresolved broadcast intent; such an intent must remain durable so a
+ * later underfunded run cannot accidentally submit the same nonce twice.
+ */
+function canClearReadyCheckpoint(options: {
+  checkpoint: AcquisitionCheckpoint
+  owner: string
+  sourceChainId: number
+  destinationChainId: number
+}): boolean {
+  const { checkpoint } = options
+  return (
+    checkpoint.owner.toLowerCase() === options.owner.toLowerCase() &&
+    checkpoint.sourceChainId === options.sourceChainId &&
+    checkpoint.destinationChainId === options.destinationChainId &&
+    checkpoint.approvalIntent == null &&
+    checkpoint.approvalTransactionHash == null &&
+    checkpoint.routeIntent == null &&
+    checkpoint.evidence.every((item) => item.sourceTransactionHash != null)
+  )
+}
+
+async function clearCompatibleReadyCheckpoint(
+  options: EnsureWalletReadyOptions,
+  source: NonNullable<ReturnType<typeof resolveSourceToken>>
+): Promise<void> {
+  if (options.maxSourceAmount == null || options.privateKey == null) return
+  const privateKey = (
+    options.privateKey.startsWith('0x') ? options.privateKey : `0x${options.privateKey}`
+  ) as `0x${string}`
+  const sourceOwner = sourceAddressForPrivateKey(privateKey)
+  const lock = await acquireAcquisitionLock(sourceOwner)
+  const checkpointStore = createAcquisitionCheckpointStore(sourceOwner)
+  try {
+    const pending = await checkpointStore.load()
+    if (
+      pending != null &&
+      canClearReadyCheckpoint({
+        checkpoint: pending,
+        owner: sourceOwner,
+        sourceChainId: source.chainId,
+        destinationChainId: options.destinationChainId,
+      })
+    ) {
+      await checkpointStore.clear()
+    }
+  } finally {
+    await lock.release()
+  }
+}
+
 /** Ensure only the exact wallet deficits are acquired before the existing deposit path continues. */
 export async function ensureWalletReadyForFilecoinTransactions(
   options: EnsureWalletReadyOptions
@@ -64,7 +117,10 @@ export async function ensureWalletReadyForFilecoinTransactions(
     walletFilBalance: options.walletFilBalance,
     ...(source != null ? { source } : {}),
   })
-  if (plan.path === 'ready') return []
+  if (plan.path === 'ready') {
+    if (source != null) await clearCompatibleReadyCheckpoint(options, source)
+    return []
+  }
   if (options.destinationChainId !== mainnet.id) {
     throw new Error(
       'Token acquisition is available only on Filecoin mainnet; use a direct USDFC deposit on this network'
