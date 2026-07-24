@@ -297,11 +297,6 @@ export async function runAutoSetup(options: PaymentSetupOptions): Promise<void> 
         throw new CliFatal(message)
       }
 
-      if ('readOnly' in authConfig && authConfig.readOnly === true) {
-        throwDisplayedFatal('Token acquisition requires signing auth; --view-address is read-only')
-      }
-      assertAcquisitionOwnerMatchesSynapse(address, options.privateKey)
-
       if (synapse.chain.id !== mainnet.id) {
         const message = `${walletShortfallMessage(shortfalls.filShortfall, shortfalls.usdfcShortfall)}. Token acquisition is available only on Filecoin mainnet; fund this wallet directly on ${network}.`
         log.line(pc.red(`✗ ${message}`))
@@ -314,6 +309,11 @@ export async function runAutoSetup(options: PaymentSetupOptions): Promise<void> 
         cancel('Please fund your wallet directly and try again')
         throw new CliFatal(message)
       }
+
+      if ('readOnly' in authConfig && authConfig.readOnly === true) {
+        throwDisplayedFatal('Token acquisition requires signing auth; --view-address is read-only')
+      }
+      assertAcquisitionOwnerMatchesSynapse(address, options.privateKey)
 
       await ensureWalletReadyForFilecoinTransactions({
         destinationChainId: synapse.chain.id,

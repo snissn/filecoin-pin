@@ -11,6 +11,7 @@ const {
   mockGetPaymentStatus,
   mockInitialize,
   mockLogLine,
+  mockParseCLIAuth,
   mockValidateGasRequirement,
   mockValidatePaymentRequirements,
 } = vi.hoisted(() => ({
@@ -23,6 +24,7 @@ const {
   mockGetPaymentStatus: vi.fn(),
   mockInitialize: vi.fn(),
   mockLogLine: vi.fn(),
+  mockParseCLIAuth: vi.fn(),
   mockValidateGasRequirement: vi.fn(),
   mockValidatePaymentRequirements: vi.fn(),
 }))
@@ -53,7 +55,7 @@ vi.mock('../../core/synapse/index.js', () => ({
 
 vi.mock('../../utils/cli-auth.js', () => ({
   getCLILogger: vi.fn(() => ({})),
-  parseCLIAuth: vi.fn(() => ({ privateKey: '0x0000000000000000000000000000000000000000000000000000000000000001' })),
+  parseCLIAuth: mockParseCLIAuth,
 }))
 
 vi.mock('../../utils/cli-helpers.js', () => ({
@@ -79,6 +81,9 @@ const TWO_USDFC = parseUnits('2', 18)
 describe('runAutoSetup acquisition integration', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockParseCLIAuth.mockReturnValue({
+      privateKey: '0x0000000000000000000000000000000000000000000000000000000000000001',
+    })
     mockInitialize.mockResolvedValue({
       chain: { id: 314, name: 'mainnet' },
       payments: { accountSummary: vi.fn().mockResolvedValue({ availableFunds: 0n }) },
@@ -250,6 +255,52 @@ describe('runAutoSetup acquisition integration', () => {
         fromToken: 'USDC',
         maxSourceAmount: '3',
         privateKey: '0x0000000000000000000000000000000000000000000000000000000000000001',
+      })
+    ).rejects.toThrow('Token acquisition is available only on Filecoin mainnet')
+
+    expect(mockEnsureWallet).not.toHaveBeenCalled()
+    expect(mockDeposit).not.toHaveBeenCalled()
+  })
+
+  it('prioritizes Calibration acquisition guidance over read-only authentication validation', async () => {
+    mockInitialize.mockResolvedValue({
+      chain: { id: 314159, name: 'calibration' },
+      payments: { accountSummary: vi.fn().mockResolvedValue({ availableFunds: 0n }) },
+      storage: { getStorageInfo: vi.fn().mockResolvedValue({ pricing: { noCDN: { perTiBPerEpoch: 1n } } }) },
+    })
+    mockParseCLIAuth.mockReturnValueOnce({ readOnly: true })
+
+    await expect(
+      runAutoSetup({
+        auto: true,
+        deposit: '2',
+        rateAllowance: '1TiB/month',
+        fromChain: 'arb',
+        fromToken: 'USDC',
+        maxSourceAmount: '3',
+      })
+    ).rejects.toThrow('Token acquisition is available only on Filecoin mainnet')
+
+    expect(mockEnsureWallet).not.toHaveBeenCalled()
+    expect(mockDeposit).not.toHaveBeenCalled()
+  })
+
+  it('prioritizes Calibration acquisition guidance over a mismatched owner key', async () => {
+    mockInitialize.mockResolvedValue({
+      chain: { id: 314159, name: 'calibration' },
+      payments: { accountSummary: vi.fn().mockResolvedValue({ availableFunds: 0n }) },
+      storage: { getStorageInfo: vi.fn().mockResolvedValue({ pricing: { noCDN: { perTiBPerEpoch: 1n } } }) },
+    })
+
+    await expect(
+      runAutoSetup({
+        auto: true,
+        deposit: '2',
+        rateAllowance: '1TiB/month',
+        fromChain: 'arb',
+        fromToken: 'USDC',
+        maxSourceAmount: '3',
+        privateKey: '0x0000000000000000000000000000000000000000000000000000000000000002',
       })
     ).rejects.toThrow('Token acquisition is available only on Filecoin mainnet')
 
