@@ -201,6 +201,28 @@ describe('runFund confirmation exit codes', () => {
     )
   })
 
+  it('keeps normal gas validation before a source-configured withdrawal can confirm or broadcast', async () => {
+    mockPlan.mockRejectedValueOnce(new Error('Insufficient FIL for gas fees'))
+
+    await expect(
+      runFund({
+        amount: '5',
+        fromChain: 'arb',
+        fromToken: 'USDC',
+        maxSourceAmount: '10',
+        sourceRpcUrl: 'https://ambient-source-rpc.example/rpc',
+        privateKey: '0x0000000000000000000000000000000000000000000000000000000000000001',
+      })
+    ).rejects.toThrow('Insufficient FIL for gas fees')
+
+    expect(mockPlan).toHaveBeenCalledWith(
+      expect.objectContaining({ validateWalletReadiness: true, deferWalletReadinessForPositiveDelta: true })
+    )
+    expect(mockEnsureWallet).not.toHaveBeenCalled()
+    expect(mockConfirm).not.toHaveBeenCalled()
+    expect(mockWithdraw).not.toHaveBeenCalled()
+  })
+
   it('exits with code 2 when an interactive source acquisition is declined before execution', async () => {
     mockPlan.mockResolvedValueOnce(planResult(5_000_000_000_000_000_000n))
     mockEnsureWallet.mockImplementationOnce(

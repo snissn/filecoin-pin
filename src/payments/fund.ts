@@ -376,7 +376,8 @@ export async function runFund(options: FundOptions): Promise<void> {
       targetDeposit: hasAmount ? targetDeposit : undefined,
       mode: options.mode ?? 'exact',
       allowWithdraw: options.mode !== 'minimum',
-      validateWalletReadiness: !acquisitionRequested,
+      validateWalletReadiness: true,
+      deferWalletReadinessForPositiveDelta: acquisitionRequested,
     })
     const { plan } = planResult
     spinner.stop(`${pc.green('✓')} Funding plan prepared`)
