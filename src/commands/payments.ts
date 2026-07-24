@@ -37,6 +37,15 @@ const setupCommand = new Command('setup')
       if (setupOptions.auto) {
         await runAutoSetup(setupOptions)
       } else {
+        const hasSourceSelection = [
+          setupOptions.fromChain,
+          setupOptions.fromToken,
+          setupOptions.maxSourceAmount,
+          setupOptions.slippage,
+        ].some((value) => value != null)
+        if (hasSourceSelection) {
+          throw new Error('Source acquisition options require payments setup --auto')
+        }
         await runInteractiveSetup(setupOptions)
       }
     } catch {
@@ -45,6 +54,7 @@ const setupCommand = new Command('setup')
   })
 
 addAuthOptions(setupCommand)
+addFundingSourceOptions(setupCommand)
 paymentsCommand.addCommand(setupCommand)
 
 // Fund command - adjust funds to an exact runway or deposited total

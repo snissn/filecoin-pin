@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const {
   mockCheckAllowances,
+  mockCheckAndSetAllowances,
   mockCheckFILBalance,
   mockCheckUSDFCBalance,
   mockDeposit,
@@ -13,6 +14,7 @@ const {
   mockValidatePaymentRequirements,
 } = vi.hoisted(() => ({
   mockCheckAllowances: vi.fn(),
+  mockCheckAndSetAllowances: vi.fn(),
   mockCheckFILBalance: vi.fn(),
   mockCheckUSDFCBalance: vi.fn(),
   mockDeposit: vi.fn(),
@@ -31,7 +33,7 @@ vi.mock('../../core/payments/index.js', () => ({
   MIN_FIL_FOR_GAS: 100n,
   calculateDepositCapacity: vi.fn(() => ({ gibPerMonth: 0 })),
   checkAllowances: mockCheckAllowances,
-  checkAndSetAllowances: vi.fn(),
+  checkAndSetAllowances: mockCheckAndSetAllowances,
   checkFILBalance: mockCheckFILBalance,
   checkUSDFCBalance: mockCheckUSDFCBalance,
   computeAutoSetupTargetBalance: vi.fn(),
@@ -44,6 +46,7 @@ vi.mock('../../core/payments/index.js', () => ({
 vi.mock('../../core/synapse/index.js', () => ({
   getClientAddress: vi.fn(() => '0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf'),
   initializeSynapse: mockInitialize,
+  mainnet: { id: 314 },
 }))
 
 vi.mock('../../utils/cli-auth.js', () => ({
@@ -67,7 +70,7 @@ vi.mock('../../payments/setup.js', () => ({
   displayDepositWarning: vi.fn(),
 }))
 
-import { runAutoSetup } from '../../payments/auto.js'
+import { formatAutoSetupRetryCommand, runAutoSetup } from '../../payments/auto.js'
 
 const TWO_USDFC = parseUnits('2', 18)
 
@@ -94,6 +97,7 @@ describe('runAutoSetup acquisition integration', () => {
     mockValidateGasRequirement.mockReturnValue({ isValid: true })
     mockEnsureWallet.mockResolvedValue([])
     mockDeposit.mockResolvedValue({ depositTx: '0xdeposit' })
+    mockCheckAndSetAllowances.mockResolvedValue({ updated: false })
   })
 
   it('keeps the explicit target and acquires wallet shortfalls before the existing deposit', async () => {
@@ -115,6 +119,7 @@ describe('runAutoSetup acquisition integration', () => {
         fromChain: 'arb',
         fromToken: 'USDC',
         maxSourceAmount: '3',
+        privateKey: '0x0000000000000000000000000000000000000000000000000000000000000001',
       } as any)
     ).resolves.toBeUndefined()
 
@@ -128,5 +133,120 @@ describe('runAutoSetup acquisition integration', () => {
     )
     expect(mockDeposit).toHaveBeenCalledWith(expect.anything(), TWO_USDFC)
     expect(order).toEqual(['acquire', 'deposit'])
+  })
+
+  it('does not acquire when the existing Filecoin Pay balance and allowances are sufficient', async () => {
+    mockCheckFILBalance.mockResolvedValue({ balance: 0n, isCalibnet: false, hasSufficientGas: false })
+    mockCheckUSDFCBalance.mockResolvedValue(0n)
+    mockCheckAllowances.mockResolvedValue({ needsUpdate: false })
+    mockGetPaymentStatus.mockReset().mockResolvedValue({
+      filecoinPayBalance: TWO_USDFC,
+      filBalance: 0n,
+      walletUsdfcBalance: 0n,
+      currentAllowances: {},
+    })
+
+    await expect(
+      runAutoSetup({
+        auto: true,
+        deposit: '2',
+        rateAllowance: '1TiB/month',
+        fromChain: 'arb',
+        fromToken: 'USDC',
+        maxSourceAmount: '3',
+      })
+    ).resolves.toBeUndefined()
+
+    expect(mockEnsureWallet).not.toHaveBeenCalled()
+    expect(mockDeposit).not.toHaveBeenCalled()
+  })
+
+  it('uses acquisition for an allowance-only FIL shortfall without requiring USDFC', async () => {
+    mockCheckAllowances.mockResolvedValue({ needsUpdate: true })
+    mockGetPaymentStatus.mockReset()
+    mockGetPaymentStatus
+      .mockResolvedValueOnce({
+        filecoinPayBalance: TWO_USDFC,
+        filBalance: 0n,
+        walletUsdfcBalance: 0n,
+        currentAllowances: {},
+      })
+      .mockResolvedValueOnce({
+        filecoinPayBalance: TWO_USDFC,
+        filBalance: 100n,
+        walletUsdfcBalance: 0n,
+        currentAllowances: {},
+      })
+
+    await expect(
+      runAutoSetup({
+        auto: true,
+        deposit: '2',
+        rateAllowance: '1TiB/month',
+        fromChain: 'arb',
+        fromToken: 'USDC',
+        maxSourceAmount: '3',
+        privateKey: '0x0000000000000000000000000000000000000000000000000000000000000001',
+      })
+    ).resolves.toBeUndefined()
+
+    expect(mockEnsureWallet).toHaveBeenCalledWith(expect.objectContaining({ requiredUsdfc: 0n }))
+    expect(mockDeposit).not.toHaveBeenCalled()
+    expect(mockCheckAndSetAllowances).toHaveBeenCalled()
+  })
+
+  it('rejects a partial source selection before connecting or sending a transaction', async () => {
+    await expect(
+      runAutoSetup({ auto: true, deposit: '2', rateAllowance: '1TiB/month', fromChain: 'arb' })
+    ).rejects.toThrow('Acquisition requires --from-chain, --from-token, and --max-source-amount together')
+
+    expect(mockInitialize).not.toHaveBeenCalled()
+    expect(mockEnsureWallet).not.toHaveBeenCalled()
+    expect(mockDeposit).not.toHaveBeenCalled()
+  })
+
+  it('fails closed on Calibration before invoking the mainnet acquisition provider', async () => {
+    mockInitialize.mockResolvedValue({
+      chain: { id: 314159, name: 'calibration' },
+      payments: { accountSummary: vi.fn().mockResolvedValue({ availableFunds: 0n }) },
+      storage: { getStorageInfo: vi.fn().mockResolvedValue({ pricing: { noCDN: { perTiBPerEpoch: 1n } } }) },
+    })
+
+    await expect(
+      runAutoSetup({
+        auto: true,
+        deposit: '2',
+        rateAllowance: '1TiB/month',
+        fromChain: 'arb',
+        fromToken: 'USDC',
+        maxSourceAmount: '3',
+        privateKey: '0x0000000000000000000000000000000000000000000000000000000000000001',
+      })
+    ).rejects.toThrow('Token acquisition is available only on Filecoin mainnet')
+
+    expect(mockEnsureWallet).not.toHaveBeenCalled()
+    expect(mockDeposit).not.toHaveBeenCalled()
+  })
+
+  it('formats a recovery command with target and source bounds but no secrets', () => {
+    const command = formatAutoSetupRetryCommand(
+      {
+        auto: true,
+        deposit: '2',
+        rateAllowance: '1TiB/month',
+        fromChain: 'arb',
+        fromToken: 'USDC',
+        maxSourceAmount: '3',
+        sourceRpcUrl: 'https://rpc.example/?api_key=secret',
+        privateKey: 'private-key',
+      },
+      TWO_USDFC
+    )
+
+    expect(command).toContain("'--deposit' '2'")
+    expect(command).toContain("'--from-chain' 'arb'")
+    expect(command).toContain("'--max-source-amount' '3'")
+    expect(command).not.toContain('rpc.example')
+    expect(command).not.toContain('private-key')
   })
 })

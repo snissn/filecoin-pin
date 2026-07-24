@@ -7,8 +7,15 @@
  */
 
 import pc from 'picocolors'
-import { parseUnits } from 'viem'
+import { formatUnits, parseUnits } from 'viem'
 import { CliFatal, isCliFatal } from '../common/cli-errors.js'
+import { sourceAddressForPrivateKey } from '../core/payments/acquisition/execute.js'
+import { ensureWalletReadyForFilecoinTransactions } from '../core/payments/acquisition/orchestrate.js'
+import {
+  isSupportedSquidSlippage,
+  MAX_SQUID_SLIPPAGE_PERCENT,
+  MIN_SQUID_SLIPPAGE_PERCENT,
+} from '../core/payments/acquisition/squid.js'
 import {
   calculateDepositCapacity,
   checkAllowances,
@@ -18,17 +25,100 @@ import {
   computeAutoSetupTargetBalance,
   depositUSDFC,
   getPaymentStatus,
+  MIN_FIL_FOR_GAS,
   validateGasRequirement,
   validatePaymentRequirements,
 } from '../core/payments/index.js'
+import { calculateWalletShortfalls } from '../core/payments/wallet-funding.js'
 import { DEFAULT_COPIES } from '../core/synapse/constants.js'
-import { getClientAddress, initializeSynapse } from '../core/synapse/index.js'
+import { getClientAddress, initializeSynapse, mainnet } from '../core/synapse/index.js'
 import { formatUSDFC } from '../core/utils/format.js'
 import { getCLILogger, parseCLIAuth } from '../utils/cli-auth.js'
 import { cancel, createSpinner, intro, outro } from '../utils/cli-helpers.js'
 import { log } from '../utils/cli-logger.js'
 import { displayAccountInfo, displayDepositWarning } from './setup.js'
 import type { PaymentSetupOptions } from './types.js'
+
+function shellQuote(value: string | number): string {
+  return `'${String(value).replaceAll("'", "'\"'\"'")}'`
+}
+
+/** A safe-to-paste retry that never includes RPC endpoints or private keys. */
+export function formatAutoSetupRetryCommand(options: PaymentSetupOptions, targetFilecoinPayBalance: bigint): string {
+  const argumentsList = [
+    'filecoin-pin',
+    'payments',
+    'setup',
+    '--auto',
+    '--deposit',
+    formatUnits(targetFilecoinPayBalance, 18),
+    '--from-chain',
+    options.fromChain ?? '<supported-chain>',
+    '--from-token',
+    options.fromToken ?? '<source-token>',
+    '--max-source-amount',
+    options.maxSourceAmount ?? '<maximum-source-amount>',
+  ]
+  if (options.network != null) argumentsList.push('--network', options.network)
+  if (options.slippage != null) argumentsList.push('--slippage', String(options.slippage))
+  return argumentsList.map(shellQuote).join(' ')
+}
+
+function formatAutoSetupDirectRetryCommand(options: PaymentSetupOptions, targetFilecoinPayBalance: bigint): string {
+  const argumentsList = [
+    'filecoin-pin',
+    'payments',
+    'setup',
+    '--auto',
+    '--deposit',
+    formatUnits(targetFilecoinPayBalance, 18),
+  ]
+  if (options.network != null) argumentsList.push('--network', options.network)
+  return argumentsList.map(shellQuote).join(' ')
+}
+
+function throwDisplayedFatal(message: string): never {
+  log.line(pc.red(`Error: ${message}`))
+  log.flush()
+  throw new CliFatal(message)
+}
+
+function assertAcquisitionOwnerMatchesSynapse(address: string, privateKey: string | undefined): void {
+  if (privateKey == null || privateKey === '') {
+    throw new Error(
+      'Token acquisition requires the wallet owner private key; session and view-only auth cannot approve source routes'
+    )
+  }
+  const normalizedPrivateKey = (privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`) as `0x${string}`
+  const sourceOwner = sourceAddressForPrivateKey(normalizedPrivateKey)
+  if (sourceOwner.toLowerCase() !== address.toLowerCase()) {
+    throw new Error('Acquisition private key must control the configured Filecoin wallet owner')
+  }
+}
+
+function sourceOptionCount(options: PaymentSetupOptions): number {
+  return [options.fromChain, options.fromToken, options.maxSourceAmount].filter((value) => value != null).length
+}
+
+function validateAcquisitionOptions(options: PaymentSetupOptions): boolean {
+  const count = sourceOptionCount(options)
+  if (count > 0 && count !== 3) {
+    throwDisplayedFatal('Acquisition requires --from-chain, --from-token, and --max-source-amount together')
+  }
+  if (options.slippage != null && count !== 3) {
+    throwDisplayedFatal('Acquisition requires --from-chain, --from-token, and --max-source-amount together')
+  }
+  if (options.slippage != null && !isSupportedSquidSlippage(options.slippage)) {
+    throwDisplayedFatal(
+      `Slippage must be between ${MIN_SQUID_SLIPPAGE_PERCENT} and ${MAX_SQUID_SLIPPAGE_PERCENT} percent.`
+    )
+  }
+  return count === 3
+}
+
+function walletShortfallMessage(filShortfall: bigint, usdfcShortfall: bigint): string {
+  return `Wallet shortfalls: FIL ${formatUnits(filShortfall, 18)}, USDFC ${formatUSDFC(usdfcShortfall)}`
+}
 
 /**
  * Run automatic payment setup with defaults
@@ -53,6 +143,11 @@ export async function runAutoSetup(options: PaymentSetupOptions): Promise<void> 
       throw new CliFatal(`Invalid deposit amount '${options.deposit}'`)
     }
   }
+
+  // SOURCE_RPC_URL may be ambient configuration. Only the complete, explicit
+  // source selection activates acquisition; partial selections must fail before
+  // we connect to a provider or send a Filecoin transaction.
+  const acquisitionRequested = validateAcquisitionOptions(options)
 
   const spinner = createSpinner()
   spinner.start('Initializing connection...')
@@ -119,20 +214,83 @@ export async function runAutoSetup(options: PaymentSetupOptions): Promise<void> 
       log.flush()
     }
 
+    const resolvedTargetFilecoinPayBalance = targetFilecoinPayBalance
+
     // Track if any changes were made
     let actionsTaken = false
     let actualFilecoinPayTopUp = 0n
 
-    const needsDeposit = status.filecoinPayBalance < targetFilecoinPayBalance
+    const needsDeposit = status.filecoinPayBalance < resolvedTargetFilecoinPayBalance
     const needsAllowanceUpdate = allowanceCheck.needsUpdate
+    const neededFilecoinPayTopUp = needsDeposit ? resolvedTargetFilecoinPayBalance - status.filecoinPayBalance : 0n
+    const requiredFilReserve = needsDeposit || needsAllowanceUpdate ? MIN_FIL_FOR_GAS : 0n
+    let currentWalletFilBalance = filStatus.balance
+    let currentWalletUsdfcBalance = walletUsdfcBalance
 
-    // Gate on wallet funding only when this run will send transactions.
-    // A deposit spends wallet USDFC and gas; an allowance update spends gas
-    // alone, so wallet USDFC is not required for it.
+    const shortfalls = calculateWalletShortfalls({
+      requiredUsdfc: neededFilecoinPayTopUp,
+      walletUsdfcBalance: currentWalletUsdfcBalance,
+      requiredFilReserve,
+      walletFilBalance: currentWalletFilBalance,
+    })
+
+    if (shortfalls.filShortfall > 0n || shortfalls.usdfcShortfall > 0n) {
+      const retryCommand = formatAutoSetupRetryCommand(options, resolvedTargetFilecoinPayBalance)
+      if (!acquisitionRequested) {
+        const message = `${walletShortfallMessage(shortfalls.filShortfall, shortfalls.usdfcShortfall)}. Fund the Filecoin wallet directly, then retry.`
+        log.line(pc.red(`✗ ${message}`))
+        log.line(pc.cyan(`Retry with source acquisition: ${retryCommand}`))
+        log.flush()
+        cancel('Please fund your wallet and try again')
+        throw new CliFatal(message)
+      }
+
+      if ('readOnly' in authConfig && authConfig.readOnly === true) {
+        throwDisplayedFatal('Token acquisition requires signing auth; --view-address is read-only')
+      }
+      assertAcquisitionOwnerMatchesSynapse(address, options.privateKey)
+
+      if (synapse.chain.id !== mainnet.id) {
+        const message = `${walletShortfallMessage(shortfalls.filShortfall, shortfalls.usdfcShortfall)}. Token acquisition is available only on Filecoin mainnet; fund this wallet directly on ${network}.`
+        log.line(pc.red(`✗ ${message}`))
+        log.line(
+          pc.cyan(
+            `Retry direct deposit: ${formatAutoSetupDirectRetryCommand(options, resolvedTargetFilecoinPayBalance)}`
+          )
+        )
+        log.flush()
+        cancel('Please fund your wallet directly and try again')
+        throw new CliFatal(message)
+      }
+
+      await ensureWalletReadyForFilecoinTransactions({
+        destinationChainId: synapse.chain.id,
+        walletUsdfcBalance: currentWalletUsdfcBalance,
+        walletFilBalance: currentWalletFilBalance,
+        requiredUsdfc: neededFilecoinPayTopUp,
+        fromChain: options.fromChain,
+        fromToken: options.fromToken,
+        maxSourceAmount: options.maxSourceAmount,
+        sourceRpcUrl: options.sourceRpcUrl,
+        slippage: options.slippage,
+        privateKey: options.privateKey,
+        provider: { integratorId: process.env.SQUID_INTEGRATOR_ID },
+        rereadWalletBalances: async () => {
+          const freshStatus = await getPaymentStatus(synapse)
+          return { fil: freshStatus.filBalance, usdfc: freshStatus.walletUsdfcBalance }
+        },
+      })
+      const refreshedStatus = await getPaymentStatus(synapse)
+      currentWalletFilBalance = refreshedStatus.filBalance
+      currentWalletUsdfcBalance = refreshedStatus.walletUsdfcBalance
+    }
+
+    // Preserve the existing validation and transaction behavior after the
+    // funding layer has returned fresh destination balances.
     if (needsDeposit || needsAllowanceUpdate) {
       const validation = needsDeposit
-        ? validatePaymentRequirements(filStatus.balance, walletUsdfcBalance, filStatus.isCalibnet)
-        : validateGasRequirement(filStatus.balance, filStatus.isCalibnet)
+        ? validatePaymentRequirements(currentWalletFilBalance, currentWalletUsdfcBalance, filStatus.isCalibnet)
+        : validateGasRequirement(currentWalletFilBalance, filStatus.isCalibnet)
       if (!validation.isValid) {
         const errorMsg = validation.errorMessage ?? 'Payment validation failed'
         log.line(`${pc.red('✗')} ${errorMsg}`)
@@ -147,12 +305,11 @@ export async function runAutoSetup(options: PaymentSetupOptions): Promise<void> 
     }
 
     if (needsDeposit) {
-      const neededFilecoinPayTopUp = targetFilecoinPayBalance - status.filecoinPayBalance
       actualFilecoinPayTopUp = neededFilecoinPayTopUp
 
-      if (neededFilecoinPayTopUp > walletUsdfcBalance) {
+      if (neededFilecoinPayTopUp > currentWalletUsdfcBalance) {
         throw new Error(
-          `Insufficient USDFC for deposit (need ${formatUSDFC(neededFilecoinPayTopUp)} USDFC, have ${formatUSDFC(walletUsdfcBalance)} USDFC)`
+          `Insufficient USDFC for deposit (need ${formatUSDFC(neededFilecoinPayTopUp)} USDFC, have ${formatUSDFC(currentWalletUsdfcBalance)} USDFC)`
         )
       }
 
