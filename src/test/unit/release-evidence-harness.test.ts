@@ -1,11 +1,50 @@
-import { spawnSync } from 'node:child_process'
+import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 const temporaryDirectories: string[] = []
+const temporaryProcesses: ChildProcessWithoutNullStreams[] = []
 const supportsPOSIXModes = process.platform !== 'win32'
+
+async function startRpcServer(chainId: number): Promise<string> {
+  const script = [
+    "import { createServer } from 'node:http'",
+    `const chainId = ${chainId}`,
+    'const server = createServer((request, response) => {',
+    "  let body = ''",
+    "  request.on('data', (chunk) => { body += chunk })",
+    "  request.on('end', () => {",
+    '    const payload = JSON.parse(body)',
+    "    response.setHeader('content-type', 'application/json')",
+    "    response.end(JSON.stringify({ jsonrpc: '2.0', id: payload.id, result: `0x${chainId.toString(16)}` }))",
+    '  })',
+    '})',
+    "server.listen(0, '127.0.0.1', () => console.log(server.address().port))",
+    "process.on('SIGTERM', () => server.close())",
+  ].join('\n')
+  const child = spawn(process.execPath, ['--input-type=module', '--eval', script])
+  temporaryProcesses.push(child)
+
+  const port = await new Promise<number>((resolvePort, rejectPort) => {
+    let stdout = ''
+    let stderr = ''
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk
+    })
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk
+      const newline = stdout.indexOf('\n')
+      if (newline === -1) return
+      resolvePort(Number(stdout.slice(0, newline)))
+    })
+    child.once('error', rejectPort)
+    child.once('exit', (code) => rejectPort(new Error(`RPC fixture exited with ${code}: ${stderr}`)))
+  })
+
+  return `http://127.0.0.1:${port}`
+}
 
 function runHarness(args: string[]): {
   artifact: Record<string, unknown>
@@ -34,6 +73,7 @@ function runHarness(args: string[]): {
 }
 
 afterEach(() => {
+  for (const child of temporaryProcesses.splice(0)) child.kill()
   for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { force: true, recursive: true })
 })
 
@@ -197,7 +237,37 @@ describe('release evidence harness', () => {
     expect(readFileSync(output, 'utf8')).toBe(original)
   })
 
-  it('persists requested state before an unfunded fake mainnet child and atomically redacts its completion output', () => {
+  it('fails closed before execution when RPC_URL does not match the requested network', async () => {
+    const rpcUrl = await startRpcServer(314)
+    const directory = mkdtempSync(join(tmpdir(), 'filecoin-pin-release-evidence-'))
+    temporaryDirectories.push(directory)
+    const output = join(directory, 'must-not-exist.json')
+    const result = spawnSync(
+      process.execPath,
+      [
+        resolve('scripts/release-evidence.mjs'),
+        '--network',
+        'calibration',
+        '--flow',
+        'fund',
+        '--amount',
+        '2',
+        '--execute',
+        '--output',
+        output,
+      ],
+      { encoding: 'utf8', env: { ...process.env, RPC_URL: rpcUrl } }
+    )
+
+    expect(result.status).toBe(1)
+    expect(`${result.stdout}${result.stderr}`).toContain(
+      'RPC_URL chain ID 314 does not match requested calibration chain ID 314159'
+    )
+    expect(existsSync(output)).toBe(false)
+  })
+
+  it('persists requested state before an unfunded fake mainnet child and atomically redacts its completion output', async () => {
+    const rpcUrl = await startRpcServer(314)
     const directory = mkdtempSync(join(tmpdir(), 'filecoin-pin-release-evidence-'))
     temporaryDirectories.push(directory)
     const distDirectory = join(directory, 'dist')
@@ -245,7 +315,7 @@ describe('release evidence harness', () => {
           EVIDENCE_ARTIFACT: output,
           NETWORK: 'calibration',
           PRIVATE_KEY: '0xfake-private-key',
-          RPC_URL: 'https://filecoin-user:filecoin-password@example.test/rpc?token=filecoin-token',
+          RPC_URL: `${rpcUrl}/v2/filecoin-password/rpc?token=filecoin-token`,
           SOURCE_RPC_URL: 'https://arb-user:arb-password@example.test/rpc?token=arb-token',
           SQUID_INTEGRATOR_ID: 'fake-integrator-id',
         },

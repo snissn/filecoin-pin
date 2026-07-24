@@ -10,9 +10,11 @@ import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { chmod, mkdir, rename, unlink, writeFile } from 'node:fs/promises'
 import { basename, dirname, resolve } from 'node:path'
+import { createPublicClient, http, webSocket } from 'viem'
 
 const allowedNetworks = new Set(['devnet', 'calibration', 'mainnet'])
 const allowedFlows = new Set(['fund', 'setup'])
+const networkChainIds = { calibration: 314159, devnet: 31415926, mainnet: 314 }
 const usdcBaseUnits = 1_000_000n
 const maxMainnetSourceCapUSDC = 10_000_000n
 
@@ -157,6 +159,38 @@ function sanitizedText(value) {
   return result.replace(/\b(?:https?|wss?):\/\/[^\s'"`<>]+/giu, '[redacted URL]')
 }
 
+async function verifyRpcNetwork(options) {
+  const rpcUrl = process.env.RPC_URL?.trim()
+  if (!options.execute || rpcUrl == null || rpcUrl === '') return
+
+  const isWebSocket = /^wss?:\/\//iu.test(rpcUrl)
+  if (!isWebSocket && !/^https?:\/\//iu.test(rpcUrl)) {
+    throw new Error('RPC_URL must use http, https, ws, or wss for execute-time network verification')
+  }
+
+  const client = createPublicClient({
+    transport: isWebSocket
+      ? webSocket(rpcUrl, { keepAlive: false, reconnect: false, retryCount: 0, timeout: 10_000 })
+      : http(rpcUrl, { retryCount: 0, timeout: 10_000 }),
+  })
+  let rpcClient
+  try {
+    if (isWebSocket) rpcClient = await client.transport.getRpcClient()
+    const chainId = await client.getChainId()
+    const expectedChainId = networkChainIds[options.network]
+    if (chainId !== expectedChainId) {
+      throw new Error(
+        `RPC_URL chain ID ${chainId} does not match requested ${options.network} chain ID ${expectedChainId}; no CLI command was executed`
+      )
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('does not match requested')) throw error
+    throw new Error('Unable to verify that RPC_URL matches the requested network; no CLI command was executed')
+  } finally {
+    rpcClient?.close()
+  }
+}
+
 function defaultOutput(network, flow) {
   const stamp = new Date().toISOString().replaceAll(':', '-').replaceAll('.', '-')
   return resolve('artifacts', 'release-evidence', `${stamp}-${network}-${flow}.json`)
@@ -202,6 +236,7 @@ const options = parseArgs(process.argv.slice(2))
 if (options != null) {
   const command = commandFor(options)
   const output = resolve(options.output ?? defaultOutput(options.network, options.flow))
+  await verifyRpcNetwork(options)
   const artifact = {
     schemaVersion: '1.0',
     kind: 'filecoin-pin-release-evidence-run',
