@@ -15,6 +15,7 @@ const {
   mockInitialize,
   mockGetClientAddress,
   mockEnsureWallet,
+  mockParseCLIAuth,
 } = vi.hoisted(() => ({
   mockConfirm: vi.fn(),
   mockIsCancel: vi.fn(() => false),
@@ -27,6 +28,7 @@ const {
   mockInitialize: vi.fn(async () => ({ chain: { id: 314 } })),
   mockGetClientAddress: vi.fn(() => '0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf'),
   mockEnsureWallet: vi.fn(),
+  mockParseCLIAuth: vi.fn(() => ({})),
 }))
 
 vi.mock('@clack/prompts', () => ({
@@ -42,7 +44,7 @@ vi.mock('../../core/payments/acquisition/orchestrate.js', () => ({
   ensureWalletReadyForFilecoinTransactions: mockEnsureWallet,
 }))
 vi.mock('../../utils/cli-auth.js', () => ({
-  parseCLIAuth: vi.fn(() => ({})),
+  parseCLIAuth: mockParseCLIAuth,
   getCLILogger: vi.fn(() => ({})),
 }))
 vi.mock('../../utils/cli-helpers.js', () => ({
@@ -96,6 +98,7 @@ describe('runFund confirmation exit codes', () => {
     mockInitialize.mockResolvedValue({ chain: { id: 314 } })
     mockGetClientAddress.mockReturnValue('0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf')
     mockEnsureWallet.mockResolvedValue(undefined)
+    mockParseCLIAuth.mockReturnValue({})
     process.exitCode = 0
   })
 
@@ -307,6 +310,53 @@ describe('runFund confirmation exit codes', () => {
         privateKey: '0x0000000000000000000000000000000000000000000000000000000000000001',
       })
     ).rejects.toThrow('Acquisition private key must control the configured Filecoin wallet owner')
+
+    expect(mockEnsureWallet).not.toHaveBeenCalled()
+    expect(mockDeposit).not.toHaveBeenCalled()
+  })
+
+  it('rejects parsed view-only auth before source acquisition or a Filecoin Pay deposit', async () => {
+    const planned = planResult(5_000_000_000_000_000_000n)
+    planned.status = { walletUsdfcBalance: 0n, filBalance: 0n }
+    mockPlan.mockResolvedValueOnce(planned)
+    mockParseCLIAuth.mockReturnValueOnce({ readOnly: true })
+
+    await expect(
+      runFund({
+        amount: '5',
+        viewAddress: '0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf',
+        fromChain: 'arb',
+        fromToken: 'USDC',
+        maxSourceAmount: '10',
+        sourceRpcUrl: 'https://arbitrum.example/rpc',
+        privateKey: '0x0000000000000000000000000000000000000000000000000000000000000001',
+      })
+    ).rejects.toThrow('Token acquisition requires signing auth; --view-address is read-only')
+
+    expect(mockEnsureWallet).not.toHaveBeenCalled()
+    expect(mockConfirm).not.toHaveBeenCalled()
+    expect(mockDeposit).not.toHaveBeenCalled()
+  })
+
+  it('keeps an acquisition-configured read-only no-op free of signing work', async () => {
+    mockPlan.mockResolvedValueOnce(planResult(0n))
+    mockParseCLIAuth.mockReturnValueOnce({ readOnly: true })
+    const synapse = {
+      chain: { id: 314 },
+      payments: { accountSummary: vi.fn().mockResolvedValue({ funds: 0n }) },
+    }
+    mockInitialize.mockResolvedValueOnce(synapse)
+
+    await expect(
+      runFund({
+        amount: '5',
+        viewAddress: '0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf',
+        fromChain: 'arb',
+        fromToken: 'USDC',
+        maxSourceAmount: '10',
+        privateKey: '0x0000000000000000000000000000000000000000000000000000000000000001',
+      })
+    ).resolves.toBeUndefined()
 
     expect(mockEnsureWallet).not.toHaveBeenCalled()
     expect(mockDeposit).not.toHaveBeenCalled()

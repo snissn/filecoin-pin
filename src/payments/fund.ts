@@ -466,6 +466,10 @@ export async function runFund(options: FundOptions): Promise<void> {
       return
     }
 
+    if (plan.delta > 0n && acquisitionRequested && 'readOnly' in authConfig && authConfig.readOnly === true) {
+      throw new CliFatal('Token acquisition requires signing auth; --view-address is read-only')
+    }
+
     if (plan.delta > 0n && (acquisitionRequested || plan.walletShortfall != null)) {
       if (acquisitionRequested) {
         assertAcquisitionOwnerMatchesSynapse(synapse, options.privateKey)
