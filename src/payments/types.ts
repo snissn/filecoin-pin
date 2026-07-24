@@ -77,6 +77,6 @@ export interface FundOptions extends CLIAuthOptions {
   maxSourceAmount?: string
   /** Optional Arbitrum RPC endpoint. It is never inferred from --rpc-url. */
   sourceRpcUrl?: string
-  /** Quote slippage percentage (0 < n <= 5). */
+  /** Quote slippage percentage (0.01 <= n <= 99.99). */
   slippage?: number
 }

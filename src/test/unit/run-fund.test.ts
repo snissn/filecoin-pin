@@ -473,13 +473,17 @@ describe('runFund confirmation exit codes', () => {
     const privateKey = '0x0000000000000000000000000000000000000000000000000000000000000001'
     const publicBridgeUrl = 'https://app.usdfc.net/#/bridge'
     const publicFaucetUrl = 'https://faucet.calibnet.chainsafe-fil.io/'
+    const publicSushiUrl =
+      'https://www.sushi.com/filecoin/swap?token0=NATIVE&token1=0x80b98d3aa09ffff255c3ba4a241111ff1262f045'
     const unconfiguredCredentialUrl = 'https://provider.example/rpc?access_key=unconfigured-secret'
+    const credentialBearingSwapUrl =
+      'https://provider.example/swap?token=swap-secret&token0=NATIVE&token1=0x80b98d3aa09ffff255c3ba4a241111ff1262f045'
     const planned = planResult(5_000_000_000_000_000_000n)
     planned.status = { walletUsdfcBalance: 0n, filBalance: 0n }
     mockPlan.mockResolvedValueOnce(planned)
     mockEnsureWallet.mockRejectedValueOnce(
       new Error(
-        `HTTP 429 from viem\nBridge: ${publicBridgeUrl}\nFaucet: ${publicFaucetUrl}\nURL: ${sourceRpcUrl}\nRequest URL: ${rpcUrl}\nProvider URL: ${unconfiguredCredentialUrl}\nPrivate key: ${privateKey}`
+        `HTTP 429 from viem\nBridge: ${publicBridgeUrl}\nFaucet: ${publicFaucetUrl}\nSwap: ${publicSushiUrl}\nURL: ${sourceRpcUrl}\nRequest URL: ${rpcUrl}\nProvider URL: ${unconfiguredCredentialUrl}\nCredential swap: ${credentialBearingSwapUrl}\nPrivate key: ${privateKey}`
       )
     )
 
@@ -497,9 +501,11 @@ describe('runFund confirmation exit codes', () => {
     expect((failure as Error).message).not.toContain(sourceRpcUrl)
     expect((failure as Error).message).not.toContain(rpcUrl)
     expect((failure as Error).message).not.toContain(unconfiguredCredentialUrl)
+    expect((failure as Error).message).not.toContain(credentialBearingSwapUrl)
     expect((failure as Error).message).not.toContain(privateKey)
     expect((failure as Error).message).toContain(publicBridgeUrl)
     expect((failure as Error).message).toContain(publicFaucetUrl)
+    expect((failure as Error).message).toContain(publicSushiUrl)
     expect((failure as Error).cause).toBeUndefined()
 
     const output = mockLogLine.mock.calls.flat().join('\n')
@@ -508,6 +514,7 @@ describe('runFund confirmation exit codes', () => {
     expect(output).not.toContain('source-secret')
     expect(output).not.toContain('filecoin-secret')
     expect(output).not.toContain('unconfigured-secret')
+    expect(output).not.toContain('swap-secret')
     expect(output).not.toContain(privateKey)
   })
 
@@ -607,6 +614,25 @@ describe('runFund confirmation exit codes', () => {
 
     expect(mockLogLine.mock.calls.flat().filter((line) => String(line).includes(message))).toHaveLength(1)
     expect(mockLogFlush).toHaveBeenCalledTimes(1)
+    expect(mockInitialize).not.toHaveBeenCalled()
+    expect(mockEnsureWallet).not.toHaveBeenCalled()
+    expect(mockDeposit).not.toHaveBeenCalled()
+    expect(mockWithdraw).not.toHaveBeenCalled()
+  })
+
+  it('rejects provider-invalid slippage before initialization or acquisition work', async () => {
+    const message = 'Slippage must be between 0.01 and 99.99 percent.'
+
+    await expect(
+      runFund({
+        amount: '5',
+        fromChain: 'arb',
+        fromToken: 'USDC',
+        maxSourceAmount: '10',
+        slippage: 0.001,
+      })
+    ).rejects.toThrow(message)
+
     expect(mockInitialize).not.toHaveBeenCalled()
     expect(mockEnsureWallet).not.toHaveBeenCalled()
     expect(mockDeposit).not.toHaveBeenCalled()

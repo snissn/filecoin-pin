@@ -9,6 +9,11 @@ import { parseUnits } from 'viem'
 import { MIN_RUNWAY_DAYS } from '../common/constants.js'
 import { normalizeNetworkName } from '../common/get-rpc-url.js'
 import { USDFC_DECIMALS } from '../core/payments/constants.js'
+import {
+  isSupportedSquidSlippage,
+  MAX_SQUID_SLIPPAGE_PERCENT,
+  MIN_SQUID_SLIPPAGE_PERCENT,
+} from '../core/payments/acquisition/squid.js'
 import { log } from './cli-logger.js'
 
 /**
@@ -92,8 +97,10 @@ export function addAuthOptions(command: Command): Command {
 /** Parse the bounded quote slippage accepted by the first acquisition route. */
 export function parseSlippageOption(value: string): number {
   const parsed = Number(value)
-  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 5) {
-    throw new InvalidArgumentError('Slippage must be greater than 0 and no more than 5 percent.')
+  if (!isSupportedSquidSlippage(parsed)) {
+    throw new InvalidArgumentError(
+      `Slippage must be between ${MIN_SQUID_SLIPPAGE_PERCENT} and ${MAX_SQUID_SLIPPAGE_PERCENT} percent.`
+    )
   }
   return parsed
 }

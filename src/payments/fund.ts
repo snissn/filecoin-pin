@@ -13,6 +13,11 @@ import { MIN_RUNWAY_DAYS } from '../common/constants.js'
 import { resolveIpfsIndexedMetadata } from '../core/metadata/index.js'
 import { sourceAddressForPrivateKey } from '../core/payments/acquisition/execute.js'
 import { ensureWalletReadyForFilecoinTransactions } from '../core/payments/acquisition/orchestrate.js'
+import {
+  isSupportedSquidSlippage,
+  MAX_SQUID_SLIPPAGE_PERCENT,
+  MIN_SQUID_SLIPPAGE_PERCENT,
+} from '../core/payments/acquisition/squid.js'
 import type { AcquisitionEvidence } from '../core/payments/acquisition/types.js'
 import {
   checkUSDFCBalance,
@@ -120,7 +125,9 @@ function isCredentialBearingUrl(value: string): boolean {
     const url = new URL(value)
     if (url.username !== '' || url.password !== '') return true
     return [...url.searchParams.keys()].some((key) =>
-      /(?:access[-_]?key|api[-_]?key|auth|credential|key|password|secret|signature|token)/iu.test(key)
+      /^(?:(?:access|api|x-api)[-_]?key|(?:access|api|auth|id|refresh)[-_]?token|auth(?:orization)?|credential|key|password|secret|signature|token)$/iu.test(
+        key
+      )
     )
   } catch {
     return false
@@ -370,6 +377,11 @@ export async function runFund(options: FundOptions): Promise<void> {
   }
   if (options.slippage != null && sourceOptionCount !== 3) {
     throwDisplayedFatal('Acquisition requires --from-chain, --from-token, and --max-source-amount together')
+  }
+  if (options.slippage != null && !isSupportedSquidSlippage(options.slippage)) {
+    throwDisplayedFatal(
+      `Slippage must be between ${MIN_SQUID_SLIPPAGE_PERCENT} and ${MAX_SQUID_SLIPPAGE_PERCENT} percent.`
+    )
   }
   spinner.start('Connecting...')
   try {

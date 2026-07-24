@@ -11,6 +11,7 @@ import {
   addOwnerAuthOptions,
   addProviderIdOption,
   addSigningAuthOptions,
+  parseSlippageOption,
   validateAndNormalizeAutoFundOptions,
 } from '../../utils/cli-options.js'
 
@@ -185,6 +186,19 @@ describe('funding-source option environment bindings', () => {
     expect(command.opts()).not.toHaveProperty('fromChain')
     expect(command.opts()).not.toHaveProperty('fromToken')
     expect(command.opts()).not.toHaveProperty('maxSourceAmount')
+  })
+
+  it('accepts only Squid\'s inclusive provider slippage range', () => {
+    expect(parseSlippageOption('0.01')).toBe(0.01)
+    expect(parseSlippageOption('99.99')).toBe(99.99)
+    expect(() => parseSlippageOption('0.001')).toThrow('between 0.01 and 99.99')
+    expect(() => parseSlippageOption('100')).toThrow('between 0.01 and 99.99')
+  })
+
+  it('rejects invalid --slippage while Commander is parsing the fund options', () => {
+    const command = addFundingSourceOptions(new Command()).exitOverride()
+
+    expect(() => command.parse(['--slippage', '0.001'], { from: 'user' })).toThrow('between 0.01 and 99.99')
   })
 })
 

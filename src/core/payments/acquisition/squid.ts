@@ -8,6 +8,8 @@ import type {
 } from './types.js'
 
 export const SQUID_API_URL = 'https://apiplus.squidrouter.com/v2'
+export const MIN_SQUID_SLIPPAGE_PERCENT = 0.01
+export const MAX_SQUID_SLIPPAGE_PERCENT = 99.99
 const MAX_RATE_LIMIT_RETRIES = 1
 const MAX_ESTIMATED_ROUTE_DURATION_SECONDS = 30 * 60
 
@@ -66,6 +68,13 @@ export interface SquidStatusResult {
   providerExplorerUrl?: string
 }
 
+/** Squid accepts inclusive percentage slippage in this provider-defined range. */
+export function isSupportedSquidSlippage(value: number): boolean {
+  return (
+    Number.isFinite(value) && value >= MIN_SQUID_SLIPPAGE_PERCENT && value <= MAX_SQUID_SLIPPAGE_PERCENT
+  )
+}
+
 function providerError(message: string, code: AcquisitionErrorCode = 'quote-failed'): Error {
   const error = new Error(message)
   error.name = code
@@ -106,6 +115,11 @@ export async function getSquidRoute(
   request: SquidRouteRequest,
   options: SquidProviderOptions
 ): Promise<PlannedAcquisitionQuote> {
+  if (!isSupportedSquidSlippage(request.slippage)) {
+    throw providerError(
+      `Squid slippage must be between ${MIN_SQUID_SLIPPAGE_PERCENT} and ${MAX_SQUID_SLIPPAGE_PERCENT} percent`
+    )
+  }
   if (!options.integratorId) throw providerError('Token acquisition requires SQUID_INTEGRATOR_ID')
   if (request.leg.source?.chainId !== 42161 || request.leg.source.symbol !== 'USDC') {
     throw providerError('Only Arbitrum USDC is supported for token acquisition', 'unsupported-source')
