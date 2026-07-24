@@ -6,4 +6,5 @@
 * [Progress Events](progress-events.md) - Conventions for the typed `onProgress` event unions exposed by the **filecoin-pin JavaScript library's** public APIs (naming, namespacing, consumer pattern). Relevant if you're building with the library programmatically.
 * [Events & Metrics](events-and-metrics.md) - Source of truth for the anonymous telemetry events Filecoin Pin emits and the metrics they produce (names, tags, when emitted).
 * [Payments acquisition route](payments-acquisition-route.md) - Decision record and safety contract for acquiring missing [FIL](glossary.md#fil) and [USDFC](glossary.md#usdfc) before depositing into [Filecoin Pay](glossary.md#filecoin-pay).
+* [Release evidence record](release-evidence/v1.json) - Versioned, sanitized deterministic, devnet, Calibration, and pending-mainnet evidence for the acquisition release gate.
 * [Release evidence runbook](release-evidence/README.md) - Dry-run-only-by-default capture procedure, artifact sanitization, and promotion rules for release evidence.
