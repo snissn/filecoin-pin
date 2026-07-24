@@ -36,7 +36,7 @@ import {
   pollSquidStatus,
   waitForSquidTerminalStatus,
 } from '../../core/payments/acquisition/squid.js'
-import type { AcquisitionLeg, PlannedAcquisitionQuote } from '../../core/payments/acquisition/types.js'
+import type { AcquisitionEvidence, AcquisitionLeg, PlannedAcquisitionQuote } from '../../core/payments/acquisition/types.js'
 import { planWalletFunding } from '../../core/payments/wallet-funding.js'
 
 const OWNER = '0x000000000000000000000000000000000000F00D' as const
@@ -795,7 +795,10 @@ describe('Squid acquisition provider contract', () => {
       })
       const confirmation = vi.fn(async (_summary: SourceAcquisitionConfirmation) => undefined)
       const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(response({ squidTransactionStatus: 'success' }))
-      const rereadWalletBalances = vi.fn(async () => ({ fil: 100_000_000_000_000_000n, usdfc: 1n }))
+      const rereadWalletBalances = vi
+        .fn()
+        .mockResolvedValueOnce({ fil: 100_000_000_000_000_000n, usdfc: 0n })
+        .mockResolvedValue({ fil: 100_000_000_000_000_000n, usdfc: 1n })
 
       await expect(
         ensureWalletReadyForFilecoinTransactions({
@@ -1082,7 +1085,7 @@ describe('wallet shortfall acquisition planning', () => {
         getProviderStatus: vi.fn(),
         checkpointStore: emptyCheckpointStore(),
         destinationChainId: 314,
-        getFilecoinBalances: vi.fn(),
+        getFilecoinBalances: vi.fn().mockResolvedValue({ fil: 0n, usdfc: 0n }),
         waitForFilecoinArrival: vi.fn(),
       })
     ).rejects.toThrow('source-native gas cap')
@@ -1162,6 +1165,41 @@ describe('wallet shortfall acquisition planning', () => {
     expect(walletClient.sendTransaction).not.toHaveBeenCalled()
   })
 
+  it('does not broadcast a route that expires while recording its durable route intent', async () => {
+    const quote = { ...executionQuote(), expiresAt: 2 }
+    const store = emptyCheckpointStore()
+    const walletClient = {
+      writeContract: vi.fn(),
+      sendTransaction: vi.fn(),
+    }
+    const now = vi.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValueOnce(1_000).mockReturnValue(2_000)
+
+    try {
+      await expect(
+        executeTokenAcquisition({
+          privateKey: PRIVATE_KEY,
+          sourceClient: sourceClientForExecution(() => quote.sourceAmount),
+          walletClient: walletClient as never,
+          quotes: [quote],
+          refreshQuote: vi.fn(async (current) => current),
+          getProviderStatus: vi.fn(),
+          checkpointStore: store,
+          destinationChainId: 314,
+          getFilecoinBalances: vi.fn().mockResolvedValue({ fil: 0n, usdfc: 0n }),
+          waitForFilecoinArrival: vi.fn(),
+        })
+      ).rejects.toThrow('route expired before submission')
+    } finally {
+      now.mockRestore()
+    }
+
+    expect(walletClient.sendTransaction).not.toHaveBeenCalled()
+    expect(store.value).toMatchObject({
+      routeIntent: expect.objectContaining({ quoteId: quote.id }),
+    })
+    expect(store.clear).not.toHaveBeenCalled()
+  })
+
   it('does not reserve approval gas when the exact allowance already makes approval a no-op', async () => {
     const quote = executionQuote()
     const estimateContractGas = vi.fn().mockResolvedValue(3n)
@@ -1226,7 +1264,7 @@ describe('wallet shortfall acquisition planning', () => {
         getProviderStatus: vi.fn(),
         checkpointStore: emptyCheckpointStore(),
         destinationChainId: 314,
-        getFilecoinBalances: vi.fn(),
+        getFilecoinBalances: vi.fn().mockResolvedValue({ fil: 0n, usdfc: 0n }),
         waitForFilecoinArrival: vi.fn(),
       })
     ).rejects.toThrow('Insufficient source native gas')
@@ -1396,7 +1434,7 @@ describe('wallet shortfall acquisition planning', () => {
         getProviderStatus,
         checkpointStore: store,
         destinationChainId: 314,
-        getFilecoinBalances: vi.fn(),
+        getFilecoinBalances: vi.fn().mockResolvedValue({ fil: 0n, usdfc: 0n }),
         waitForFilecoinArrival,
       })
     ).resolves.toMatchObject([{ status: 'confirmed' }])
@@ -1462,6 +1500,68 @@ describe('wallet shortfall acquisition planning', () => {
     expect(walletClient.sendTransaction).not.toHaveBeenCalled()
   })
 
+  it('uses Filecoin balance proof to recover an arrived first leg while Squid remains unresolved', async () => {
+    const first = { ...executionQuote(), id: 'first-fil-arrived', asset: 'fil' as const, sourceAmount: 10n }
+    const second = {
+      ...executionQuote(),
+      id: 'second-usdfc-pending',
+      sourceAmount: 20n,
+      destinationAmount: 4n,
+    }
+    const store = checkpointStore({
+      version: 1,
+      owner: '0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf',
+      sourceChainId: 42161,
+      destinationChainId: 314,
+      committedNativeGas: 0n,
+      requiredWallet: { fil: first.destinationAmount, usdfc: 0n },
+      evidence: [
+        {
+          asset: 'fil',
+          quoteId: first.id,
+          sourceAmount: first.sourceAmount.toString(),
+          sourceTransactionHash: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          status: 'submitted',
+        },
+      ],
+    })
+    const walletClient = {
+      writeContract: vi.fn(),
+      sendTransaction: vi.fn().mockResolvedValue('0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'),
+    }
+    const getProviderStatus = vi.fn(async (evidence: AcquisitionEvidence) =>
+      evidence.asset === 'fil' ? { status: 'submitted' as const } : { status: 'confirmed' as const }
+    )
+    const getFilecoinBalances = vi.fn().mockResolvedValue({ fil: first.destinationAmount, usdfc: 0n })
+    const waitForFilecoinArrival = vi.fn().mockResolvedValue(undefined)
+
+    await expect(
+      executeTokenAcquisition({
+        privateKey: PRIVATE_KEY,
+        sourceClient: sourceClientForExecution(() => second.sourceAmount),
+        walletClient: walletClient as never,
+        quotes: [first, second],
+        maxSourceAmount: 100n,
+        refreshQuote: vi.fn(async (current) => current),
+        getProviderStatus,
+        checkpointStore: store,
+        destinationChainId: 314,
+        getFilecoinBalances,
+        waitForFilecoinArrival,
+      })
+    ).resolves.toMatchObject([
+      { asset: 'fil', status: 'confirmed' },
+      { asset: 'usdfc', status: 'confirmed' },
+    ])
+
+    expect(walletClient.sendTransaction).toHaveBeenCalledTimes(1)
+    expect(walletClient.sendTransaction).toHaveBeenCalledWith(expect.objectContaining({ to: second.target }))
+    expect(getProviderStatus).toHaveBeenCalledTimes(1)
+    expect(getProviderStatus).toHaveBeenCalledWith(expect.objectContaining({ asset: 'usdfc' }))
+    expect(waitForFilecoinArrival).toHaveBeenCalledWith({ fil: first.destinationAmount, usdfc: second.destinationAmount })
+    expect(store.clear).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps a confirmed first route under the native cap and never broadcasts it again while resuming the second leg', async () => {
     const first = { ...executionQuote(), id: 'first-fil', asset: 'fil' as const, sourceAmount: 10n }
     const second = {
@@ -1515,7 +1615,7 @@ describe('wallet shortfall acquisition planning', () => {
         getProviderStatus,
         checkpointStore: store,
         destinationChainId: 314,
-        getFilecoinBalances: vi.fn().mockResolvedValue({ fil: first.destinationAmount, usdfc: 0n }),
+        getFilecoinBalances: vi.fn().mockResolvedValue({ fil: 0n, usdfc: 0n }),
         waitForFilecoinArrival: vi.fn(),
       })
     ).rejects.toThrow('source-native gas cap')
@@ -1562,7 +1662,7 @@ describe('wallet shortfall acquisition planning', () => {
         getProviderStatus,
         checkpointStore: store,
         destinationChainId: 314,
-        getFilecoinBalances: vi.fn(),
+        getFilecoinBalances: vi.fn().mockResolvedValue({ fil: 0n, usdfc: 0n }),
         waitForFilecoinArrival: vi.fn(),
       })
     ).rejects.toThrow('remaining --max-source-amount')

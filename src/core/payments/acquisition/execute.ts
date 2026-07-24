@@ -65,7 +65,11 @@ export function assertFixedInputRefresh(previous: PlannedAcquisitionQuote, refre
   ) {
     throw new Error('Squid route changed after refresh; rerun without submitting the route')
   }
-  if (Math.floor(Date.now() / 1000) >= refreshed.expiresAt) {
+  assertRouteNotExpired(refreshed)
+}
+
+function assertRouteNotExpired(quote: PlannedAcquisitionQuote): void {
+  if (Math.floor(Date.now() / 1000) >= quote.expiresAt) {
     throw new Error('Acquisition route expired before submission; rerun')
   }
 }
@@ -136,10 +140,12 @@ async function resumeCheckpoint(options: {
   owner: Address
   destinationChainId: number
   getProviderStatus: ExecuteTokenAcquisitionOptions['getProviderStatus']
+  getFilecoinBalances: ExecuteTokenAcquisitionOptions['getFilecoinBalances']
   waitForSourceReceipt: (hash: Hex) => Promise<{ status: 'success' | 'reverted' }>
   waitForFilecoinArrival: ExecuteTokenAcquisitionOptions['waitForFilecoinArrival']
 }): Promise<AcquisitionCheckpoint> {
   const { checkpoint } = options
+  let recoveredCheckpoint = checkpoint
   if (checkpoint.committedNativeGas > MAX_SOURCE_NATIVE_GAS) {
     throw new Error(
       'Acquisition recovery state exceeds the approved source-native gas cap; do not submit another route'
@@ -167,7 +173,17 @@ async function resumeCheckpoint(options: {
       throw new Error('Source USDC approval transaction failed; do not submit another source route')
     }
     const { approvalTransactionHash: _approvalTransactionHash, ...confirmedCheckpoint } = checkpoint
-    await options.checkpointStore.save({ ...confirmedCheckpoint, evidence })
+    recoveredCheckpoint = { ...confirmedCheckpoint, evidence }
+    await options.checkpointStore.save(recoveredCheckpoint)
+  }
+  const balances = await options.getFilecoinBalances()
+  if (balances.fil >= recoveredCheckpoint.requiredWallet.fil && balances.usdfc >= recoveredCheckpoint.requiredWallet.usdfc) {
+    const balanceProvenCheckpoint = {
+      ...recoveredCheckpoint,
+      evidence: evidence.map((current) => ({ ...current, status: 'confirmed' as const })),
+    }
+    await options.checkpointStore.save(balanceProvenCheckpoint)
+    return balanceProvenCheckpoint
   }
   for (let index = 0; index < evidence.length; index += 1) {
     const current = evidence[index]
@@ -180,16 +196,16 @@ async function resumeCheckpoint(options: {
     })
     if (providerStatus.status !== 'confirmed') {
       evidence[index] = { ...current, ...providerStatus, status: providerStatus.status }
-      await options.checkpointStore.save({ ...checkpoint, evidence })
+      await options.checkpointStore.save({ ...recoveredCheckpoint, evidence })
       throw new Error(
         `Acquisition remains ${providerStatus.status}; do not resend the source transaction ${current.sourceTransactionHash}`
       )
     }
     evidence[index] = { ...current, ...providerStatus, status: 'confirmed' }
   }
-  const resumedCheckpoint = { ...checkpoint, evidence }
+  const resumedCheckpoint = { ...recoveredCheckpoint, evidence }
   await options.checkpointStore.save(resumedCheckpoint)
-  await options.waitForFilecoinArrival(checkpoint.requiredWallet)
+  await options.waitForFilecoinArrival(recoveredCheckpoint.requiredWallet)
   return resumedCheckpoint
 }
 
@@ -264,6 +280,7 @@ export async function executeTokenAcquisition(options: ExecuteTokenAcquisitionOp
         owner: account.address,
         destinationChainId: options.destinationChainId,
         getProviderStatus: options.getProviderStatus,
+        getFilecoinBalances: options.getFilecoinBalances,
         waitForSourceReceipt: (hash) => publicClient.waitForTransactionReceipt({ hash }),
         waitForFilecoinArrival: options.waitForFilecoinArrival,
       })
@@ -496,6 +513,7 @@ export async function executeTokenAcquisition(options: ExecuteTokenAcquisitionOp
       requiredWallet: addDestinationAmounts(baseline, quotes.slice(0, evidence.length - priorEvidence.length)),
       evidence,
     })
+    assertRouteNotExpired(refreshedQuote)
     const sourceTransactionHash = await walletClient.sendTransaction({
       to: getAddress(refreshedQuote.target),
       data: refreshedQuote.data as Hex,
