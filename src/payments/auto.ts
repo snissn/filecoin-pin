@@ -432,6 +432,10 @@ export async function runAutoSetup(options: PaymentSetupOptions): Promise<void> 
       log.flush()
     }
     cancel('Setup failed')
-    throw new CliFatal(msg, { cause: error instanceof Error ? error : undefined })
+    // This error can be handed to callers or reporters. Do not retain the
+    // original provider/RPC error after sanitizing an acquisition failure,
+    // because Error.cause would otherwise bypass the displayed redaction.
+    const cause = acquisitionRequested ? undefined : error instanceof Error ? error : undefined
+    throw new CliFatal(msg, cause == null ? undefined : { cause })
   }
 }

@@ -78,6 +78,17 @@ import { formatAutoSetupRetryCommand, runAutoSetup } from '../../payments/auto.j
 
 const TWO_USDFC = parseUnits('2', 18)
 
+function serializeErrorTree(value: unknown, seen = new Set<unknown>()): string {
+  if (value == null || typeof value !== 'object') return String(value)
+  if (seen.has(value)) return '[circular]'
+  seen.add(value)
+  const record = value as Record<string, unknown>
+  return Object.getOwnPropertyNames(record)
+    .sort()
+    .map((key) => `${key}: ${serializeErrorTree(record[key], seen)}`)
+    .join('\n')
+}
+
 describe('runAutoSetup acquisition integration', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -360,6 +371,17 @@ describe('runAutoSetup acquisition integration', () => {
     expect((failure as Error).message).not.toContain(privateKey)
     expect((failure as Error).message).not.toContain(unconfiguredCredentialUrl)
     expect((failure as Error).message).toContain(publicHelpUrl)
+    expect((failure as Error & { cause?: unknown }).cause).toBeUndefined()
+
+    const serializedFailure = serializeErrorTree(failure)
+    expect(serializedFailure).toContain(publicHelpUrl)
+    expect(serializedFailure).not.toContain(sourceRpcUrl)
+    expect(serializedFailure).not.toContain(rpcUrl)
+    expect(serializedFailure).not.toContain(privateKey)
+    expect(serializedFailure).not.toContain(unconfiguredCredentialUrl)
+    expect(serializedFailure).not.toContain('source-secret')
+    expect(serializedFailure).not.toContain('filecoin-secret')
+    expect(serializedFailure).not.toContain('unconfigured-secret')
     expect(mockDeposit).not.toHaveBeenCalled()
     expect(mockCheckAndSetAllowances).not.toHaveBeenCalled()
 
