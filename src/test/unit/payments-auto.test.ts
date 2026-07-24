@@ -10,6 +10,7 @@ const {
   mockEnsureWallet,
   mockGetPaymentStatus,
   mockInitialize,
+  mockLogLine,
   mockValidateGasRequirement,
   mockValidatePaymentRequirements,
 } = vi.hoisted(() => ({
@@ -21,6 +22,7 @@ const {
   mockEnsureWallet: vi.fn(),
   mockGetPaymentStatus: vi.fn(),
   mockInitialize: vi.fn(),
+  mockLogLine: vi.fn(),
   mockValidateGasRequirement: vi.fn(),
   mockValidatePaymentRequirements: vi.fn(),
 }))
@@ -62,7 +64,7 @@ vi.mock('../../utils/cli-helpers.js', () => ({
 }))
 
 vi.mock('../../utils/cli-logger.js', () => ({
-  log: { flush: vi.fn(), indent: vi.fn(), line: vi.fn(), message: vi.fn() },
+  log: { flush: vi.fn(), indent: vi.fn(), line: mockLogLine, message: vi.fn() },
 }))
 
 vi.mock('../../payments/setup.js', () => ({
@@ -205,6 +207,33 @@ describe('runAutoSetup acquisition integration', () => {
     expect(mockDeposit).not.toHaveBeenCalled()
   })
 
+  it.each([
+    ['a non-positive source maximum', 'arb', 'USDC', '0', '--max-source-amount must be greater than zero'],
+    [
+      'an unsupported source route',
+      'eth',
+      'USDC',
+      '1',
+      'Acquisition supports only --from-chain arb and --from-token USDC',
+    ],
+  ])('validates %s before connecting even when setup would otherwise be a no-op', async (_description, fromChain, fromToken, maxSourceAmount, message) => {
+    await expect(
+      runAutoSetup({
+        auto: true,
+        deposit: '2',
+        rateAllowance: '1TiB/month',
+        fromChain,
+        fromToken,
+        maxSourceAmount,
+      })
+    ).rejects.toThrow(message)
+
+    expect(mockInitialize).not.toHaveBeenCalled()
+    expect(mockEnsureWallet).not.toHaveBeenCalled()
+    expect(mockDeposit).not.toHaveBeenCalled()
+    expect(mockCheckAndSetAllowances).not.toHaveBeenCalled()
+  })
+
   it('fails closed on Calibration before invoking the mainnet acquisition provider', async () => {
     mockInitialize.mockResolvedValue({
       chain: { id: 314159, name: 'calibration' },
@@ -248,5 +277,49 @@ describe('runAutoSetup acquisition integration', () => {
     expect(command).toContain("'--max-source-amount' '3'")
     expect(command).not.toContain('rpc.example')
     expect(command).not.toContain('private-key')
+  })
+
+  it('sanitizes acquisition failures and prints a secret-free retry before any payment transaction', async () => {
+    const sourceRpcUrl = 'https://arbitrum.example/rpc?apiKey=source-secret'
+    const rpcUrl = 'https://filecoin.example/rpc?token=filecoin-secret'
+    const privateKey = '0x0000000000000000000000000000000000000000000000000000000000000001'
+    const publicHelpUrl = 'https://app.squidrouter.com/'
+    const unconfiguredCredentialUrl = 'https://provider.example/rpc?access_key=unconfigured-secret'
+    mockEnsureWallet.mockRejectedValueOnce(
+      new Error(
+        `Source RPC: ${sourceRpcUrl}\nDestination RPC: ${rpcUrl}\nPrivate key: ${privateKey}\nProvider: ${unconfiguredCredentialUrl}\nHelp: ${publicHelpUrl}`
+      )
+    )
+
+    const failure = await runAutoSetup({
+      auto: true,
+      deposit: '2',
+      rateAllowance: '1TiB/month',
+      fromChain: 'arb',
+      fromToken: 'USDC',
+      maxSourceAmount: '3',
+      sourceRpcUrl,
+      rpcUrl,
+      privateKey,
+    }).catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(Error)
+    expect((failure as Error).message).not.toContain(sourceRpcUrl)
+    expect((failure as Error).message).not.toContain(rpcUrl)
+    expect((failure as Error).message).not.toContain(privateKey)
+    expect((failure as Error).message).not.toContain(unconfiguredCredentialUrl)
+    expect((failure as Error).message).toContain(publicHelpUrl)
+    expect(mockDeposit).not.toHaveBeenCalled()
+    expect(mockCheckAndSetAllowances).not.toHaveBeenCalled()
+
+    const output = mockLogLine.mock.calls.flat().join('\n')
+    expect(output).toContain('Retry source acquisition:')
+    expect(output).toContain("'--from-chain' 'arb'")
+    expect(output).not.toContain(sourceRpcUrl)
+    expect(output).not.toContain(rpcUrl)
+    expect(output).not.toContain(privateKey)
+    expect(output).not.toContain('source-secret')
+    expect(output).not.toContain('filecoin-secret')
+    expect(output).not.toContain('unconfigured-secret')
   })
 })

@@ -11,6 +11,8 @@ import { formatUnits, parseUnits } from 'viem'
 import { CliFatal, isCliFatal } from '../common/cli-errors.js'
 import { sourceAddressForPrivateKey } from '../core/payments/acquisition/execute.js'
 import { ensureWalletReadyForFilecoinTransactions } from '../core/payments/acquisition/orchestrate.js'
+import { parseMaximumSourceAmount } from '../core/payments/acquisition/plan.js'
+import { resolveSourceToken } from '../core/payments/acquisition/source-assets.js'
 import {
   isSupportedSquidSlippage,
   MAX_SQUID_SLIPPAGE_PERCENT,
@@ -113,11 +115,57 @@ function validateAcquisitionOptions(options: PaymentSetupOptions): boolean {
       `Slippage must be between ${MIN_SQUID_SLIPPAGE_PERCENT} and ${MAX_SQUID_SLIPPAGE_PERCENT} percent.`
     )
   }
+  if (count === 3) {
+    try {
+      parseMaximumSourceAmount(options.maxSourceAmount)
+    } catch (error) {
+      throwDisplayedFatal(error instanceof Error ? error.message : String(error))
+    }
+    if (resolveSourceToken(options.fromChain, options.fromToken) == null) {
+      throwDisplayedFatal('Acquisition supports only --from-chain arb and --from-token USDC')
+    }
+  }
   return count === 3
 }
 
 function walletShortfallMessage(filShortfall: bigint, usdfcShortfall: bigint): string {
   return `Wallet shortfalls: FIL ${formatUnits(filShortfall, 18)}, USDFC ${formatUSDFC(usdfcShortfall)}`
+}
+
+function isCredentialBearingUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    if (url.username !== '' || url.password !== '') return true
+    return [...url.searchParams.keys()].some((key) =>
+      /^(?:(?:access|api|x-api)[-_]?key|(?:access|api|auth|id|refresh)[-_]?token|auth(?:orization)?|credential|key|password|secret|signature|token)$/iu.test(
+        key
+      )
+    )
+  } catch {
+    return false
+  }
+}
+
+/** Acquisition errors can echo configured endpoints or a signing key through RPC client diagnostics. */
+function sanitizeAcquisitionErrorMessage(message: string, options: PaymentSetupOptions): string {
+  let sanitized = message
+  const privateKey = options.privateKey
+  const redactedValues = [
+    options.sourceRpcUrl,
+    options.rpcUrl,
+    privateKey,
+    ...(privateKey != null && privateKey !== '' && !privateKey.startsWith('0x') ? [`0x${privateKey}`] : []),
+  ]
+  for (const value of redactedValues) {
+    if (value != null && value !== '') sanitized = sanitized.replaceAll(value, '[redacted secret]')
+  }
+  return sanitized.replace(/\b(?:https?|wss?):\/\/[^\s'"`<>]+/giu, (url) =>
+    isCredentialBearingUrl(url) ? '[redacted credential-bearing URL]' : url
+  )
+}
+
+function acquisitionRecoveryNote(): string {
+  return 'Before retrying, supply SOURCE_RPC_URL and RPC_URL through the environment or CLI flags. Endpoint URLs are intentionally omitted from this command.'
 }
 
 /**
@@ -148,6 +196,7 @@ export async function runAutoSetup(options: PaymentSetupOptions): Promise<void> 
   // source selection activates acquisition; partial selections must fail before
   // we connect to a provider or send a Filecoin transaction.
   const acquisitionRequested = validateAcquisitionOptions(options)
+  let acquisitionRetryCommand: string | undefined
 
   const spinner = createSpinner()
   spinner.start('Initializing connection...')
@@ -215,6 +264,9 @@ export async function runAutoSetup(options: PaymentSetupOptions): Promise<void> 
     }
 
     const resolvedTargetFilecoinPayBalance = targetFilecoinPayBalance
+    if (acquisitionRequested) {
+      acquisitionRetryCommand = formatAutoSetupRetryCommand(options, resolvedTargetFilecoinPayBalance)
+    }
 
     // Track if any changes were made
     let actionsTaken = false
@@ -368,8 +420,17 @@ export async function runAutoSetup(options: PaymentSetupOptions): Promise<void> 
       spinner.stop()
       throw error
     }
-    const msg = error instanceof Error ? error.message : String(error)
+    const msg = acquisitionRequested
+      ? sanitizeAcquisitionErrorMessage(error instanceof Error ? error.message : String(error), options)
+      : error instanceof Error
+        ? error.message
+        : String(error)
     spinner.stop(`${pc.red('✗')} Setup failed: ${msg}`)
+    if (acquisitionRequested && acquisitionRetryCommand != null) {
+      log.line(pc.yellow(`Retry source acquisition: ${acquisitionRetryCommand}`))
+      log.line(pc.yellow(acquisitionRecoveryNote()))
+      log.flush()
+    }
     cancel('Setup failed')
     throw new CliFatal(msg, { cause: error instanceof Error ? error : undefined })
   }
