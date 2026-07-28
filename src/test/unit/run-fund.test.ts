@@ -1,13 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { runFund } from '../../payments/fund.js'
 
-const { mockConfirm, mockIsCancel, mockCancel, mockPlan, mockDeposit, mockWithdraw } = vi.hoisted(() => ({
+const { mockConfirm, mockIsCancel, mockCancel, mockPlan, mockDeposit, mockWithdraw, mockAcquire } = vi.hoisted(() => ({
   mockConfirm: vi.fn(),
   mockIsCancel: vi.fn(() => false),
   mockCancel: vi.fn(),
   mockPlan: vi.fn(),
   mockDeposit: vi.fn(),
   mockWithdraw: vi.fn(),
+  mockAcquire: vi.fn(async () => false),
 }))
 
 vi.mock('@clack/prompts', () => ({
@@ -15,8 +16,13 @@ vi.mock('@clack/prompts', () => ({
   isCancel: mockIsCancel,
 }))
 vi.mock('../../core/synapse/index.js', () => ({
-  initializeSynapse: vi.fn(async () => ({})),
+  initializeSynapse: vi.fn(async () => ({
+    chain: { id: 314 },
+    payments: { accountSummary: vi.fn(async () => ({ funds: 0n })) },
+  })),
+  getClientAddress: vi.fn(() => '0x1111111111111111111111111111111111111111'),
 }))
+vi.mock('../../payments/squid-funding.js', () => ({ acquirePaymentShortfalls: mockAcquire }))
 vi.mock('../../utils/cli-auth.js', () => ({
   parseCLIAuth: vi.fn(() => ({})),
   getCLILogger: vi.fn(() => ({})),
@@ -30,10 +36,11 @@ vi.mock('../../utils/cli-helpers.js', () => ({
 }))
 vi.mock('../../utils/cli-logger.js', () => ({
   isTTY: vi.fn(() => true),
-  log: { line: vi.fn(), indent: vi.fn(), flush: vi.fn() },
+  log: { line: vi.fn(), indent: vi.fn(), flush: vi.fn(), section: vi.fn() },
 }))
 vi.mock('../../core/payments/index.js', () => ({
   DEFAULT_LOCKUP_DAYS: 30,
+  MIN_FIL_FOR_GAS: 100n,
   planFilecoinPayFunding: mockPlan,
   checkUSDFCBalance: vi.fn(async () => 1_000_000_000_000_000_000_000n),
   depositUSDFC: mockDeposit,
@@ -56,11 +63,11 @@ function planResult(delta: bigint) {
       mode: 'exact',
       delta,
       targetDeposit: delta > 0n ? delta : -delta,
-      walletShortfall: null,
+      walletShortfall: null as bigint | null,
       projected: { runway: { state: 'active', runwayDays: 60 } },
       current: { runway: { rateUsed: 1n } },
     },
-    status: { walletUsdfcBalance: 1_000_000_000_000_000_000_000n },
+    status: { filBalance: 100n, walletUsdfcBalance: 1_000_000_000_000_000_000_000n },
   }
 }
 
@@ -68,6 +75,7 @@ describe('runFund confirmation exit codes', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockIsCancel.mockReturnValue(false)
+    mockDeposit.mockResolvedValue({ depositTx: '0xdeposit' })
     process.exitCode = 0
   })
 
@@ -113,5 +121,39 @@ describe('runFund confirmation exit codes', () => {
     await runFund({ amount: '5' })
 
     expect(process.exitCode).toBe(1)
+  })
+
+  it('does not invoke the acquisition adapter for a zero adjustment', async () => {
+    mockPlan.mockResolvedValueOnce(planResult(0n))
+
+    await runFund({ amount: '5' })
+
+    expect(mockAcquire).not.toHaveBeenCalled()
+  })
+
+  it('passes the exact FIL and USDFC shortfalls before resuming the deposit', async () => {
+    const result = planResult(500n)
+    result.plan.walletShortfall = 300n
+    result.status.filBalance = 40n
+    mockPlan.mockResolvedValueOnce(result)
+    mockAcquire.mockResolvedValueOnce(true)
+    mockConfirm.mockResolvedValueOnce(true)
+
+    await runFund({
+      amount: '5',
+      fromChain: 'arbitrum',
+      fromToken: 'USDC',
+      maxSourceAmount: '1',
+      sourceRpcUrl: 'https://source.example',
+    })
+
+    expect(mockAcquire).toHaveBeenCalledWith(
+      expect.objectContaining({
+        destinationChainId: 314,
+        shortfalls: { fil: 60n, usdfc: 300n },
+        requiredWalletUsdfc: 500n,
+      })
+    )
+    expect(mockDeposit).toHaveBeenCalledWith(expect.anything(), 500n)
   })
 })

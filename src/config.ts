@@ -14,7 +14,7 @@ function resolveChain(network: string | undefined, hasExplicitRpcUrl: boolean): 
   return undefined
 }
 
-function getDataDirectory(): string {
+export function getDataDirectory(): string {
   const home = homedir()
   const plat = platform()
 

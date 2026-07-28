@@ -29,6 +29,30 @@ export function rpcUrlOption(description: string): Option {
   return new Option('--rpc-url <url>', description).env('RPC_URL')
 }
 
+function positiveNumber(value: string): number {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) throw new InvalidArgumentError('must be a positive number')
+  return parsed
+}
+
+/** Add the explicit source selection used only when a payment command finds a wallet shortfall. */
+export function addFundingSourceOptions(command: Command): Command {
+  return command
+    .addOption(new Option('--from-chain <chain>', 'Source EVM chain').env('SOURCE_CHAIN'))
+    .addOption(new Option('--from-token <token>', 'Squid-supported source token symbol, address, or "native"').env('SOURCE_TOKEN'))
+    .addOption(
+      new Option('--max-source-amount <amount>', 'Maximum source-token amount for this operation').env(
+        'MAX_SOURCE_AMOUNT'
+      )
+    )
+    .addOption(new Option('--source-rpc-url <url>', 'Source-chain RPC endpoint').env('SOURCE_RPC_URL'))
+    .addOption(
+      new Option('--slippage <percent>', 'Maximum Squid quote slippage percentage (default: 1)')
+        .env('SQUID_SLIPPAGE')
+        .argParser(positiveNumber)
+    )
+}
+
 /**
  * Add the signing-auth flags shared by every authenticated command:
  * `--private-key`, `--wallet-address`, `--session-key`.

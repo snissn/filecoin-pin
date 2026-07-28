@@ -12,7 +12,16 @@ export type {
   StorageAllowances,
 } from '../core/payments/index.js'
 
-export interface PaymentSetupOptions extends CLIAuthOptions {
+/** Explicit source-token controls shared by the two payment funding commands. */
+export interface FundingSourceOptions {
+  fromChain?: string | undefined
+  fromToken?: string | undefined
+  maxSourceAmount?: string | undefined
+  sourceRpcUrl?: string | undefined
+  slippage?: number | undefined
+}
+
+export interface PaymentSetupOptions extends CLIAuthOptions, FundingSourceOptions {
   auto: boolean
   /** Explicit target Filecoin Pay balance (USDFC). When omitted, `--auto` derives it from live on-chain pricing. */
   deposit?: string
@@ -59,7 +68,7 @@ export interface FundingAdjustmentResult {
   warnings?: string[]
 }
 
-export interface FundOptions extends CLIAuthOptions {
+export interface FundOptions extends CLIAuthOptions, FundingSourceOptions {
   days?: number
   amount?: string
   /**

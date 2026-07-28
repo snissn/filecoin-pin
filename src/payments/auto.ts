@@ -18,6 +18,7 @@ import {
   computeAutoSetupTargetBalance,
   depositUSDFC,
   getPaymentStatus,
+  MIN_FIL_FOR_GAS,
   validateGasRequirement,
   validatePaymentRequirements,
 } from '../core/payments/index.js'
@@ -28,6 +29,7 @@ import { getCLILogger, parseCLIAuth } from '../utils/cli-auth.js'
 import { cancel, createSpinner, intro, outro } from '../utils/cli-helpers.js'
 import { log } from '../utils/cli-logger.js'
 import { displayAccountInfo, displayDepositWarning } from './setup.js'
+import { acquirePaymentShortfalls } from './squid-funding.js'
 import type { PaymentSetupOptions } from './types.js'
 
 /**
@@ -125,14 +127,34 @@ export async function runAutoSetup(options: PaymentSetupOptions): Promise<void> 
 
     const needsDeposit = status.filecoinPayBalance < targetFilecoinPayBalance
     const needsAllowanceUpdate = allowanceCheck.needsUpdate
+    const neededFilecoinPayTopUp = needsDeposit ? targetFilecoinPayBalance - status.filecoinPayBalance : 0n
+    const requiredFil = needsDeposit || needsAllowanceUpdate ? MIN_FIL_FOR_GAS : 0n
+    const filShortfall = filStatus.balance < requiredFil ? requiredFil - filStatus.balance : 0n
+    const usdfcShortfall =
+      walletUsdfcBalance < neededFilecoinPayTopUp ? neededFilecoinPayTopUp - walletUsdfcBalance : 0n
+    let currentFilBalance = filStatus.balance
+    let currentWalletUsdfcBalance = walletUsdfcBalance
+    const acquired = await acquirePaymentShortfalls({
+      synapse,
+      owner: address,
+      destinationChainId: synapse.chain.id,
+      shortfalls: { fil: filShortfall, usdfc: usdfcShortfall },
+      requiredWalletUsdfc: neededFilecoinPayTopUp,
+      options,
+    })
+    if (acquired) {
+      const refreshed = await getPaymentStatus(synapse)
+      currentFilBalance = refreshed.filBalance
+      currentWalletUsdfcBalance = refreshed.walletUsdfcBalance
+    }
 
     // Gate on wallet funding only when this run will send transactions.
     // A deposit spends wallet USDFC and gas; an allowance update spends gas
     // alone, so wallet USDFC is not required for it.
     if (needsDeposit || needsAllowanceUpdate) {
       const validation = needsDeposit
-        ? validatePaymentRequirements(filStatus.balance, walletUsdfcBalance, filStatus.isCalibnet)
-        : validateGasRequirement(filStatus.balance, filStatus.isCalibnet)
+        ? validatePaymentRequirements(currentFilBalance, currentWalletUsdfcBalance, filStatus.isCalibnet)
+        : validateGasRequirement(currentFilBalance, filStatus.isCalibnet)
       if (!validation.isValid) {
         const errorMsg = validation.errorMessage ?? 'Payment validation failed'
         log.line(`${pc.red('✗')} ${errorMsg}`)
@@ -147,12 +169,11 @@ export async function runAutoSetup(options: PaymentSetupOptions): Promise<void> 
     }
 
     if (needsDeposit) {
-      const neededFilecoinPayTopUp = targetFilecoinPayBalance - status.filecoinPayBalance
       actualFilecoinPayTopUp = neededFilecoinPayTopUp
 
-      if (neededFilecoinPayTopUp > walletUsdfcBalance) {
+      if (neededFilecoinPayTopUp > currentWalletUsdfcBalance) {
         throw new Error(
-          `Insufficient USDFC for deposit (need ${formatUSDFC(neededFilecoinPayTopUp)} USDFC, have ${formatUSDFC(walletUsdfcBalance)} USDFC)`
+          `Insufficient USDFC for deposit (need ${formatUSDFC(neededFilecoinPayTopUp)} USDFC, have ${formatUSDFC(currentWalletUsdfcBalance)} USDFC)`
         )
       }
 

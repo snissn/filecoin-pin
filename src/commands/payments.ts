@@ -6,7 +6,7 @@ import { runInteractiveSetup } from '../payments/interactive.js'
 import { showPaymentStatus } from '../payments/status.js'
 import type { FundOptions, PaymentSetupOptions } from '../payments/types.js'
 import { runWithdraw } from '../payments/withdraw.js'
-import { addAuthOptions } from '../utils/cli-options.js'
+import { addAuthOptions, addFundingSourceOptions } from '../utils/cli-options.js'
 
 export const paymentsCommand = new Command('payments').description(
   'Manage storage payments (required before your first upload)'
@@ -37,6 +37,13 @@ const setupCommand = new Command('setup')
       if (setupOptions.auto) {
         await runAutoSetup(setupOptions)
       } else {
+        if (
+          [options.fromChain, options.fromToken, options.maxSourceAmount, options.sourceRpcUrl, options.slippage].some(
+            (value) => value != null
+          )
+        ) {
+          throw new Error('Source acquisition options require payments setup --auto')
+        }
         await runInteractiveSetup(setupOptions)
       }
     } catch {
@@ -45,6 +52,7 @@ const setupCommand = new Command('setup')
   })
 
 addAuthOptions(setupCommand)
+addFundingSourceOptions(setupCommand)
 paymentsCommand.addCommand(setupCommand)
 
 // Fund command - adjust funds to an exact runway or deposited total
@@ -71,6 +79,7 @@ const fundCommand = new Command('fund')
   })
 
 addAuthOptions(fundCommand)
+addFundingSourceOptions(fundCommand)
 paymentsCommand.addCommand(fundCommand)
 
 // Withdraw command
