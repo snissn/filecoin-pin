@@ -21,6 +21,7 @@ import {
   MIN_FIL_FOR_GAS,
   planFilecoinPayFunding,
   toStorageRunwaySummary,
+  validateGasRequirement,
   validatePaymentRequirements,
   withdrawUSDFC,
 } from '../core/payments/index.js'
@@ -345,16 +346,16 @@ export async function runFund(options: FundOptions): Promise<void> {
       return
     }
 
-    if (plan.delta > 0n && sourceAcquisitionRequested) {
+    if (sourceAcquisitionRequested) {
       const filShortfall =
         planResult.status.filBalance < MIN_FIL_FOR_GAS ? MIN_FIL_FOR_GAS - planResult.status.filBalance : 0n
-      const usdfcShortfall = plan.walletShortfall ?? 0n
+      const usdfcShortfall = plan.delta > 0n ? (plan.walletShortfall ?? 0n) : 0n
       const acquired = await acquirePaymentShortfalls({
         synapse,
         owner: getClientAddress(synapse),
         destinationChainId: synapse.chain.id,
         shortfalls: { fil: filShortfall, usdfc: usdfcShortfall },
-        requiredWalletUsdfc: plan.delta,
+        requiredWalletUsdfc: plan.delta > 0n ? plan.delta : 0n,
         options,
         confirm: async (summary: PaymentAcquisitionSummary) => {
           const amount = summary.quotes.reduce((total, quote) => total + quote.sourceAmount, 0n)
@@ -373,7 +374,10 @@ export async function runFund(options: FundOptions): Promise<void> {
       })
       if (acquired) {
         const refreshed = await getPaymentStatus(synapse)
-        const validation = validatePaymentRequirements(refreshed.filBalance, refreshed.walletUsdfcBalance, false)
+        const validation =
+          plan.delta > 0n
+            ? validatePaymentRequirements(refreshed.filBalance, refreshed.walletUsdfcBalance, false)
+            : validateGasRequirement(refreshed.filBalance, false)
         if (!validation.isValid) {
           const help = validation.helpMessage != null ? ` ${validation.helpMessage}` : ''
           throw new Error(`${validation.errorMessage ?? 'Payment validation failed'}${help}`)

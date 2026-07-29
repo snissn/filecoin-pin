@@ -53,6 +53,7 @@ vi.mock('../../core/payments/index.js', () => ({
   MIN_FIL_FOR_GAS: 100n,
   planFilecoinPayFunding: mockPlan,
   getPaymentStatus: vi.fn(async () => ({ filBalance: 100n, walletUsdfcBalance: 1_000n })),
+  validateGasRequirement: vi.fn(() => ({ isValid: true })),
   validatePaymentRequirements: vi.fn(() => ({ isValid: true })),
   checkUSDFCBalance: vi.fn(async () => 1_000_000_000_000_000_000_000n),
   depositUSDFC: mockDeposit,
@@ -195,5 +196,29 @@ describe('runFund confirmation exit codes', () => {
     expect(mockDeposit).not.toHaveBeenCalled()
     expect(mockCancel).toHaveBeenCalledWith('Source acquisition cancelled by user')
     expect(process.exitCode).toBe(2)
+  })
+
+  it('acquires only the FIL gas shortfall before a source-enabled withdrawal', async () => {
+    const result = planResult(-500n)
+    result.status.filBalance = 40n
+    mockPlan.mockResolvedValueOnce(result)
+    mockAcquire.mockResolvedValueOnce(true)
+    mockConfirm.mockResolvedValueOnce(true)
+
+    await runFund({
+      amount: '5',
+      fromChain: 'arbitrum',
+      fromToken: 'USDC',
+      maxSourceAmount: '1',
+      sourceRpcUrl: 'https://source.example',
+    })
+
+    expect(mockAcquire).toHaveBeenCalledWith(
+      expect.objectContaining({
+        shortfalls: { fil: 60n, usdfc: 0n },
+        requiredWalletUsdfc: 0n,
+      })
+    )
+    expect(mockWithdraw).toHaveBeenCalledWith(expect.anything(), 500n)
   })
 })
