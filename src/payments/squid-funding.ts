@@ -1,36 +1,38 @@
 import type { Synapse } from '@filoz/synapse-sdk'
 import {
+  type DestinationRequirement,
   executeSquidFunding,
   fetchSquidCatalog,
   NATIVE_TOKEN_ADDRESS,
   planSquidFunding,
   quoteSquidRoute,
   resolveSourceToken,
-  type DestinationRequirement,
   type SourceToken,
   type SquidPublicClient,
   type SquidQuote,
   type SquidWalletClient,
 } from 'squid-evm-funding'
 import {
+  type Address,
+  type Chain,
   createPublicClient,
   createWalletClient,
   getAddress,
+  type Hex,
   http,
   parseUnits,
-  type Address,
-  type Chain,
-  type Hex,
 } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
+import { arbitrum, avalanche, base, bsc, mainnet as ethereum, filecoin, optimism, polygon } from 'viem/chains'
 import { publicActionsL2 } from 'viem/op-stack'
-import { arbitrum, avalanche, base, bsc, filecoin, mainnet as ethereum, optimism, polygon } from 'viem/chains'
+import { CliIncomplete } from '../common/cli-errors.js'
 import { MIN_FIL_FOR_GAS } from '../core/payments/index.js'
 import { mainnet as filecoinMainnet } from '../core/synapse/index.js'
 import {
   createSquidFundingState,
   openSquidCheckpointStore,
   type SquidFundingState,
+  sealSquidFundingState,
 } from './squid-checkpoint.js'
 import type { FundingSourceOptions } from './types.js'
 
@@ -110,14 +112,19 @@ function signingAccount(value: string | undefined, owner: Address) {
   return account
 }
 
-function requested(options: FundingSourceOptions): boolean {
+/** Whether the user supplied any meaningful source-acquisition option. */
+export function isFundingSourceRequested(options: FundingSourceOptions): boolean {
+  return [options.fromChain, options.fromToken, options.maxSourceAmount, options.sourceRpcUrl, options.slippage].some(
+    (value) => (typeof value === 'string' ? value.trim() !== '' : value != null)
+  )
+}
+
+function validateSourceSelection(options: FundingSourceOptions): void {
   const values = [options.fromChain, options.fromToken, options.maxSourceAmount]
   const count = values.filter((value) => value != null && value.trim() !== '').length
-  if (count === 0) return false
   if (count !== values.length) {
     throw new Error('Source acquisition requires --from-chain, --from-token, and --max-source-amount together')
   }
-  return true
 }
 
 function requirements(input: AcquirePaymentShortfallsInput): DestinationRequirement[] {
@@ -164,7 +171,9 @@ function resumable(state: SquidFundingState, current: readonly DestinationRequir
 }
 
 function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  return fetch(input, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
+  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+  const signal = init?.signal != null ? AbortSignal.any([init.signal, timeout]) : timeout
+  return fetch(input, { ...init, signal })
 }
 
 function safeMessage(error: unknown, values: readonly (string | undefined)[]): string {
@@ -190,9 +199,10 @@ function makeSourceClients(policy: SourcePolicy, rpcUrl: string, privateKey: str
 /** Acquire only the positive FIL/USDFC shortfalls supplied by the existing payment planner. */
 export async function acquirePaymentShortfalls(input: AcquirePaymentShortfallsInput): Promise<boolean> {
   if (input.shortfalls.fil <= 0n && input.shortfalls.usdfc <= 0n) return false
-  if (!requested(input.options)) {
+  if (!isFundingSourceRequested(input.options)) {
     throw new Error('The Filecoin wallet is underfunded; fund it directly or provide all source acquisition options')
   }
+  validateSourceSelection(input.options)
   if (input.destinationChainId !== filecoinMainnet.id) {
     throw new Error('Source acquisition is available only for Filecoin mainnet')
   }
@@ -211,7 +221,7 @@ export async function acquirePaymentShortfalls(input: AcquirePaymentShortfallsIn
   const key = integrityKey(process.env.SQUID_CHECKPOINT_INTEGRITY_KEY)
   const account = signingAccount(input.options.privateKey, input.owner)
   const currentRequirements = requirements(input)
-  const store = await openSquidCheckpointStore(input.owner)
+  const store = await openSquidCheckpointStore(input.owner, key)
   try {
     let state = await store.load()
     let source: SourceToken
@@ -253,6 +263,7 @@ export async function acquirePaymentShortfalls(input: AcquirePaymentShortfallsIn
         source,
         requirements: currentRequirements,
         sourceAmounts: quotes.map((quote) => quote.sourceAmount),
+        integrityKey: key,
       })
       await store.save(state)
     } else {
@@ -326,7 +337,7 @@ export async function acquirePaymentShortfalls(input: AcquirePaymentShortfallsIn
         squidStatusOptions: squid,
         load: async () => state?.checkpoint,
         save: async (checkpoint) => {
-          state = { ...(state as SquidFundingState), checkpoint }
+          state = sealSquidFundingState({ ...(state as SquidFundingState), checkpoint }, key)
           await store.save(state)
         },
       }
@@ -334,6 +345,7 @@ export async function acquirePaymentShortfalls(input: AcquirePaymentShortfallsIn
     await store.clear()
     return true
   } catch (error) {
+    if (error instanceof CliIncomplete) throw error
     throw new Error(safeMessage(error, [sourceRpcUrl, input.options.privateKey]))
   } finally {
     await store.release()

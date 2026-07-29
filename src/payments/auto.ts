@@ -29,7 +29,7 @@ import { getCLILogger, parseCLIAuth } from '../utils/cli-auth.js'
 import { cancel, createSpinner, intro, outro } from '../utils/cli-helpers.js'
 import { log } from '../utils/cli-logger.js'
 import { displayAccountInfo, displayDepositWarning } from './setup.js'
-import { acquirePaymentShortfalls } from './squid-funding.js'
+import { acquirePaymentShortfalls, isFundingSourceRequested } from './squid-funding.js'
 import type { PaymentSetupOptions } from './types.js'
 
 /**
@@ -134,14 +134,18 @@ export async function runAutoSetup(options: PaymentSetupOptions): Promise<void> 
       walletUsdfcBalance < neededFilecoinPayTopUp ? neededFilecoinPayTopUp - walletUsdfcBalance : 0n
     let currentFilBalance = filStatus.balance
     let currentWalletUsdfcBalance = walletUsdfcBalance
-    const acquired = await acquirePaymentShortfalls({
-      synapse,
-      owner: address,
-      destinationChainId: synapse.chain.id,
-      shortfalls: { fil: filShortfall, usdfc: usdfcShortfall },
-      requiredWalletUsdfc: neededFilecoinPayTopUp,
-      options,
-    })
+    const sourceAcquisitionRequested = isFundingSourceRequested(options)
+    const acquired =
+      sourceAcquisitionRequested && (filShortfall > 0n || usdfcShortfall > 0n)
+        ? await acquirePaymentShortfalls({
+            synapse,
+            owner: address,
+            destinationChainId: synapse.chain.id,
+            shortfalls: { fil: filShortfall, usdfc: usdfcShortfall },
+            requiredWalletUsdfc: neededFilecoinPayTopUp,
+            options,
+          })
+        : false
     if (acquired) {
       const refreshed = await getPaymentStatus(synapse)
       currentFilBalance = refreshed.filBalance

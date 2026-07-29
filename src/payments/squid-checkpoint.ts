@@ -1,12 +1,9 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 import { chmod, lstat, mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import { join } from 'node:path'
-import type {
-  DestinationRequirement,
-  SourceToken,
-  SquidExecutionCheckpoint,
-} from 'squid-evm-funding'
-import type { Address } from 'viem'
+import { lock as acquireLock } from 'proper-lockfile'
+import type { DestinationRequirement, SourceToken, SquidExecutionCheckpoint } from 'squid-evm-funding'
+import type { Address, Hex } from 'viem'
 import { getDataDirectory } from '../config.js'
 
 interface StoredRequirement {
@@ -25,6 +22,7 @@ export interface SquidFundingState {
   source: SourceToken
   requirements: StoredRequirement[]
   checkpoint?: SquidExecutionCheckpoint
+  stateIntegrity: Hex
 }
 
 const BIGINT = '$filecoinPinBigint'
@@ -37,8 +35,7 @@ function stringify(value: unknown): string {
 
 function parse(raw: string): unknown {
   return JSON.parse(raw, (_key, item: unknown) => {
-    const encoded =
-      item != null && typeof item === 'object' ? (item as Record<string, unknown>)[BIGINT] : undefined
+    const encoded = item != null && typeof item === 'object' ? (item as Record<string, unknown>)[BIGINT] : undefined
     if (
       item != null &&
       typeof item === 'object' &&
@@ -57,6 +54,66 @@ function isAddress(value: unknown): value is Address {
   return typeof value === 'string' && /^0x[0-9a-fA-F]{40}$/.test(value)
 }
 
+function isHash(value: unknown): value is Hex {
+  return typeof value === 'string' && /^0x[0-9a-fA-F]{64}$/.test(value)
+}
+
+function isCheckpoint(value: unknown): value is SquidExecutionCheckpoint {
+  if (value == null || typeof value !== 'object') return false
+  const checkpoint = value as Partial<SquidExecutionCheckpoint>
+  if (
+    typeof checkpoint.executionId !== 'string' ||
+    checkpoint.executionId.trim() === '' ||
+    !isHash(checkpoint.integrity) ||
+    !Array.isArray(checkpoint.steps)
+  ) {
+    return false
+  }
+  const keys = new Set<string>()
+  for (const value of checkpoint.steps) {
+    const step = value as Partial<(typeof checkpoint.steps)[number]>
+    if (
+      value == null ||
+      typeof value !== 'object' ||
+      !['approval', 'approval-reset', 'route'].includes(step.kind ?? '') ||
+      typeof step.requirementId !== 'string' ||
+      step.requirementId.trim() === '' ||
+      !Number.isSafeInteger(step.attempt) ||
+      (step.attempt as number) < 0 ||
+      typeof step.nativeFee !== 'bigint' ||
+      step.nativeFee < 0n ||
+      !isAddress(step.from) ||
+      !isAddress(step.to) ||
+      !isHash(step.dataHash) ||
+      typeof step.value !== 'bigint' ||
+      step.value < 0n ||
+      !Number.isSafeInteger(step.nonce) ||
+      (step.nonce as number) < 0 ||
+      typeof step.gas !== 'bigint' ||
+      step.gas <= 0n ||
+      (step.maxFeePerGas != null && (typeof step.maxFeePerGas !== 'bigint' || step.maxFeePerGas <= 0n)) ||
+      (step.maxPriorityFeePerGas != null &&
+        (typeof step.maxPriorityFeePerGas !== 'bigint' || step.maxPriorityFeePerGas < 0n)) ||
+      (step.gasPrice != null && (typeof step.gasPrice !== 'bigint' || step.gasPrice <= 0n)) ||
+      (step.destinationMinimum != null &&
+        (typeof step.destinationMinimum !== 'bigint' || step.destinationMinimum <= 0n)) ||
+      (step.quoteId != null && (typeof step.quoteId !== 'string' || step.quoteId.trim() === '')) ||
+      (step.requestId != null && (typeof step.requestId !== 'string' || step.requestId.trim() === '')) ||
+      (step.fromChainId != null && !Number.isSafeInteger(step.fromChainId)) ||
+      (step.toChainId != null && !Number.isSafeInteger(step.toChainId)) ||
+      (step.transactionHash != null && !isHash(step.transactionHash)) ||
+      (step.receiptStatus != null && !['success', 'reverted'].includes(step.receiptStatus)) ||
+      (step.receiptStatus != null && step.transactionHash == null)
+    ) {
+      return false
+    }
+    const key = `${step.kind}:${step.requirementId}:${step.attempt}`
+    if (keys.has(key)) return false
+    keys.add(key)
+  }
+  return true
+}
+
 function isState(value: unknown): value is SquidFundingState {
   if (value == null || typeof value !== 'object') return false
   const state = value as Partial<SquidFundingState>
@@ -72,6 +129,8 @@ function isState(value: unknown): value is SquidFundingState {
     typeof state.source.symbol === 'string' &&
     Number.isSafeInteger(state.source.decimals) &&
     typeof state.source.native === 'boolean' &&
+    (state.checkpoint == null || isCheckpoint(state.checkpoint)) &&
+    isHash(state.stateIntegrity) &&
     Array.isArray(state.requirements) &&
     state.requirements.length > 0 &&
     state.requirements.every(
@@ -86,6 +145,38 @@ function isState(value: unknown): value is SquidFundingState {
         requirement.sourceAmount > 0n
     )
   )
+}
+
+function integrityPayload(state: SquidFundingState): string {
+  return stringify({
+    version: state.version,
+    operationId: state.operationId,
+    owner: state.owner,
+    source: state.source,
+    requirements: state.requirements,
+    ...(state.checkpoint != null ? { checkpoint: state.checkpoint } : {}),
+  })
+}
+
+function expectedIntegrity(state: SquidFundingState, integrityKey: Hex): Hex {
+  const key = Buffer.from(integrityKey.slice(2), 'hex')
+  const digest = createHmac('sha256', key)
+    .update('filecoin-pin:squid-funding-state:v1\0')
+    .update(integrityPayload(state))
+    .digest('hex')
+  return `0x${digest}`
+}
+
+function hasValidIntegrity(state: SquidFundingState, integrityKey: Hex): boolean {
+  const actual = Buffer.from(state.stateIntegrity.slice(2), 'hex')
+  const expected = Buffer.from(expectedIntegrity(state, integrityKey).slice(2), 'hex')
+  return actual.length === expected.length && timingSafeEqual(actual, expected)
+}
+
+/** Authenticate the complete source plan and execution checkpoint before persistence. */
+export function sealSquidFundingState(state: SquidFundingState, integrityKey: Hex): SquidFundingState {
+  const unsigned = { ...state, stateIntegrity: `0x${'00'.repeat(32)}` as Hex }
+  return { ...unsigned, stateIntegrity: expectedIntegrity(unsigned, integrityKey) }
 }
 
 function assertMonotonic(previous: SquidFundingState | undefined, next: SquidFundingState): void {
@@ -152,26 +243,29 @@ export interface SquidCheckpointStore {
   release: () => Promise<void>
 }
 
-/** Hold one owner-wide lock so two CLI processes cannot sign the same source operation concurrently. */
-export async function openSquidCheckpointStore(owner: Address): Promise<SquidCheckpointStore> {
+/** Hold one owner-wide renewable lock so two CLI processes cannot sign the same source operation concurrently. */
+export async function openSquidCheckpointStore(
+  owner: Address,
+  integrityKey: Hex,
+  lockOptions: { staleMs?: number } = {}
+): Promise<SquidCheckpointStore> {
   const directory = join(process.env.SQUID_CHECKPOINT_DIR ?? getDataDirectory(), 'squid-funding')
   await mkdir(directory, { recursive: true, mode: 0o700 })
   if (process.platform !== 'win32') await chmod(directory, 0o700)
   const identity = createHash('sha256').update(owner.toLowerCase()).digest('hex')
   const path = join(directory, `${identity}.json`)
-  const lockPath = join(directory, `${identity}.lock`)
-  let lock
+  const lockPath = join(directory, `${identity}.owner`)
+  const stale = lockOptions.staleMs ?? 300_000
+  let releaseLock: (() => Promise<void>) | undefined
   try {
-    lock = await open(lockPath, 'wx', 0o600)
-    await lock.writeFile(`${process.pid}\n`)
-    await lock.sync()
-    await syncDirectory(directory)
+    releaseLock = await acquireLock(lockPath, {
+      realpath: false,
+      retries: 0,
+      stale,
+      update: Math.max(1_000, Math.floor(stale / 3)),
+    })
   } catch (error) {
-    if (lock != null) {
-      await lock.close().catch(() => undefined)
-      await rm(lockPath, { force: true }).catch(() => undefined)
-    }
-    throw new Error('Another Squid funding operation is active, or its lock requires manual reconciliation', {
+    throw new Error('Another Squid funding operation is active', {
       cause: error instanceof Error ? error : undefined,
     })
   }
@@ -183,6 +277,7 @@ export async function openSquidCheckpointStore(owner: Address): Promise<SquidChe
       if (!details.isFile()) throw new Error('Squid funding state is not a regular file')
       const value = parse(await readFile(path, 'utf8'))
       if (!isState(value)) throw new Error('Invalid Squid funding state')
+      if (!hasValidIntegrity(value, integrityKey)) throw new Error('Squid funding state failed its integrity check')
       return value
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
@@ -191,6 +286,7 @@ export async function openSquidCheckpointStore(owner: Address): Promise<SquidChe
   }
   const save = async (state: SquidFundingState): Promise<void> => {
     if (!isState(state)) throw new Error('Invalid Squid funding state')
+    if (!hasValidIntegrity(state, integrityKey)) throw new Error('Squid funding state failed its integrity check')
     assertMonotonic(await load(), state)
     const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`
     try {
@@ -215,12 +311,7 @@ export async function openSquidCheckpointStore(owner: Address): Promise<SquidChe
   const release = async () => {
     if (released) return
     released = true
-    try {
-      await lock.close()
-    } finally {
-      await rm(lockPath, { force: true })
-      await syncDirectory(directory)
-    }
+    await releaseLock()
   }
   return { load, save, clear, release }
 }
@@ -230,19 +321,24 @@ export function createSquidFundingState(input: {
   source: SourceToken
   requirements: readonly DestinationRequirement[]
   sourceAmounts: readonly bigint[]
+  integrityKey: Hex
 }): SquidFundingState {
   if (input.requirements.length !== input.sourceAmounts.length) {
     throw new Error('Squid funding requirements and source amounts do not match')
   }
-  return {
-    version: 1,
-    operationId: randomUUID(),
-    owner: input.owner,
-    source: input.source,
-    requirements: input.requirements.map((requirement, index) => {
-      const sourceAmount = input.sourceAmounts[index]
-      if (sourceAmount == null || sourceAmount <= 0n) throw new Error('Squid funding source amount is missing')
-      return { ...requirement, sourceAmount }
-    }),
-  }
+  return sealSquidFundingState(
+    {
+      version: 1,
+      operationId: randomUUID(),
+      owner: input.owner,
+      source: input.source,
+      requirements: input.requirements.map((requirement, index) => {
+        const sourceAmount = input.sourceAmounts[index]
+        if (sourceAmount == null || sourceAmount <= 0n) throw new Error('Squid funding source amount is missing')
+        return { ...requirement, sourceAmount }
+      }),
+      stateIntegrity: `0x${'00'.repeat(32)}`,
+    },
+    input.integrityKey
+  )
 }

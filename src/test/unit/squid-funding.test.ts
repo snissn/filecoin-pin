@@ -1,4 +1,4 @@
-import { parseEther, type Address } from 'viem'
+import { type Address, parseEther } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -119,7 +119,9 @@ describe('Squid payment funding adapter', () => {
     expect(mocks.execute).not.toHaveBeenCalled()
   })
 
-  it.each([314159, 31415926])('fails closed on unsupported destination %i before provider activity', async (chainId) => {
+  it.each([
+    314159, 31415926,
+  ])('fails closed on unsupported destination %i before provider activity', async (chainId) => {
     await expect(acquirePaymentShortfalls(input(chainId))).rejects.toThrow(
       'Source acquisition is available only for Filecoin mainnet'
     )
@@ -210,12 +212,18 @@ describe('Squid payment funding adapter', () => {
     const baseSource = { ...SOURCE, chain: { chainId: 8453, networkName: 'Base' } }
     mocks.resolveSource.mockReturnValue(baseSource)
     const planned = [
-      { ...quote('fil', { id: 'filecoin-fil', amount: 7n, token: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' }), source: baseSource },
-      { ...quote('usdfc', { id: 'filecoin-usdfc', amount: 11n, token: '0x80B98d3aa09ffff255c3ba4A241111Ff1262F045' }), source: baseSource },
+      {
+        ...quote('fil', { id: 'filecoin-fil', amount: 7n, token: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' }),
+        source: baseSource,
+      },
+      {
+        ...quote('usdfc', { id: 'filecoin-usdfc', amount: 11n, token: '0x80B98d3aa09ffff255c3ba4A241111Ff1262F045' }),
+        source: baseSource,
+      },
     ]
     mocks.plan.mockResolvedValue(planned)
-    mocks.execute.mockImplementation(async (execution) => ({
-      executionId: `${execution.feeMode}:${execution.opStackFeeBuffer?.(parseEther('1'))}`,
+    mocks.execute.mockImplementation(async () => ({
+      executionId: 'execution',
       steps: [],
       integrity: `0x${'33'.repeat(32)}`,
     }))
@@ -230,5 +238,12 @@ describe('Squid payment funding adapter', () => {
       }),
       expect.anything()
     )
+    const execution = mocks.execute.mock.calls[0]?.[0]
+    const buffer = execution?.opStackFeeBuffer
+    expect(buffer).toBeTypeOf('function')
+    expect(buffer?.(0n)).toBe(0n)
+    expect(buffer?.(1n)).toBe(2n)
+    expect(buffer?.(7n)).toBe(9n)
+    expect(buffer?.(parseEther('1'))).toBe(parseEther('1.25'))
   })
 })

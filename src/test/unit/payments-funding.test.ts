@@ -194,6 +194,26 @@ describe('planFilecoinPayFunding', () => {
     expect(plan.current.runway.state).toBe('active')
   })
 
+  it('returns an acquisition plan before validating an underfunded wallet', async () => {
+    const rateUsed = 1_000_000_000_000_000_000n
+    const status = makeStatus({ filecoinPayBalance: 0n, rateUsed, wallet: 0n, filBalance: 0n })
+    const summary = makeSummary({ filecoinPayBalance: 0n, rateUsed })
+    vi.spyOn(paymentsIndex, 'getPaymentStatus').mockResolvedValue(status)
+    const validate = vi
+      .spyOn(paymentsIndex, 'validatePaymentRequirements')
+      .mockReturnValue({ isValid: false, errorMessage: 'underfunded' })
+
+    const { plan } = await planFilecoinPayFunding({
+      synapse: makeSynapseStub(summary) as any,
+      targetRunwayDays: 1,
+      allowUnderfundedWallet: true,
+    })
+
+    expect(validate).not.toHaveBeenCalled()
+    expect(plan.delta).toBeGreaterThan(0n)
+    expect(plan.walletShortfall).toBe(plan.delta)
+  })
+
   it('clamps withdrawals in minimum mode', async () => {
     const rateUsed = 1_000_000_000_000_000_000n
     const perDay = rateUsed * TIME_CONSTANTS.EPOCHS_PER_DAY

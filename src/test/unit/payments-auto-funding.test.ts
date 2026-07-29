@@ -27,7 +27,17 @@ const synapse = {
   },
 }
 
-vi.mock('../../payments/squid-funding.js', () => ({ acquirePaymentShortfalls: mocks.acquire }))
+function isFundingSourceRequested(options: Record<string, unknown>): boolean {
+  return ['fromChain', 'fromToken', 'maxSourceAmount', 'sourceRpcUrl', 'slippage'].some((key) => {
+    const value = options[key]
+    return typeof value === 'string' ? value.trim() !== '' : value != null
+  })
+}
+
+vi.mock('../../payments/squid-funding.js', () => ({
+  acquirePaymentShortfalls: mocks.acquire,
+  isFundingSourceRequested,
+}))
 vi.mock('../../core/synapse/index.js', () => ({
   initializeSynapse: vi.fn(async () => synapse),
   getClientAddress: vi.fn(() => owner),
@@ -108,6 +118,29 @@ describe('payments setup --auto source acquisition', () => {
         options,
       })
     )
+    expect(mocks.deposit).toHaveBeenCalledWith(synapse, 100n)
+  })
+
+  it('skips acquisition and balance refresh when the wallet already covers the setup target', async () => {
+    mocks.checkFIL.mockResolvedValue({ balance: 100n, isCalibnet: false, hasSufficientGas: true })
+    mocks.checkUSDFC.mockResolvedValue(100n)
+    mocks.getStatus.mockReset().mockResolvedValue({
+      filecoinPayBalance: 0n,
+      filBalance: 100n,
+      walletUsdfcBalance: 100n,
+      currentAllowances: { lockupUsage: 0n },
+    })
+
+    await runAutoSetup({
+      auto: true,
+      rateAllowance: '1TiB/month',
+      fromChain: 'arbitrum',
+      fromToken: 'USDC',
+      maxSourceAmount: '1',
+    })
+
+    expect(mocks.acquire).not.toHaveBeenCalled()
+    expect(mocks.getStatus).toHaveBeenCalledOnce()
     expect(mocks.deposit).toHaveBeenCalledWith(synapse, 100n)
   })
 })

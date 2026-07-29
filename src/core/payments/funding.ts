@@ -360,6 +360,8 @@ export interface PlanFilecoinPayFundingOptions {
   mode?: FundingMode | undefined
   allowWithdraw?: boolean | undefined
   ensureAllowances?: boolean | undefined
+  /** Return a plan for an underfunded wallet so the caller can acquire the reported shortfall before execution. */
+  allowUnderfundedWallet?: boolean | undefined
 }
 
 /**
@@ -396,6 +398,7 @@ export async function planFilecoinPayFunding(options: PlanFilecoinPayFundingOpti
     mode = 'exact',
     allowWithdraw = true,
     ensureAllowances = false,
+    allowUnderfundedWallet = false,
   } = options
 
   if (targetRunwayDays != null && targetDeposit != null) {
@@ -423,11 +426,13 @@ export async function planFilecoinPayFunding(options: PlanFilecoinPayFundingOpti
     currentAllowances: status.currentAllowances,
   }
 
-  const isCalibnet = status.chainId === calibration.id
-  const validation = validatePaymentRequirements(status.filBalance, status.walletUsdfcBalance, isCalibnet)
-  if (!validation.isValid) {
-    const help = validation.helpMessage ? ` ${validation.helpMessage}` : ''
-    throw new Error(`${validation.errorMessage}${help}`)
+  if (!allowUnderfundedWallet) {
+    const isCalibnet = status.chainId === calibration.id
+    const validation = validatePaymentRequirements(status.filBalance, status.walletUsdfcBalance, isCalibnet)
+    if (!validation.isValid) {
+      const help = validation.helpMessage ? ` ${validation.helpMessage}` : ''
+      throw new Error(`${validation.errorMessage}${help}`)
+    }
   }
 
   let priceList = priceListOpt

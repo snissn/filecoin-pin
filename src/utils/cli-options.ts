@@ -29,9 +29,11 @@ export function rpcUrlOption(description: string): Option {
   return new Option('--rpc-url <url>', description).env('RPC_URL')
 }
 
-function positiveNumber(value: string): number {
+function squidSlippage(value: string): number {
   const parsed = Number(value)
-  if (!Number.isFinite(parsed) || parsed <= 0) throw new InvalidArgumentError('must be a positive number')
+  if (!Number.isFinite(parsed) || parsed < 0.01 || parsed > 99.99) {
+    throw new InvalidArgumentError('must be between 0.01 and 99.99')
+  }
   return parsed
 }
 
@@ -39,7 +41,11 @@ function positiveNumber(value: string): number {
 export function addFundingSourceOptions(command: Command): Command {
   return command
     .addOption(new Option('--from-chain <chain>', 'Source EVM chain').env('SOURCE_CHAIN'))
-    .addOption(new Option('--from-token <token>', 'Squid-supported source token symbol, address, or "native"').env('SOURCE_TOKEN'))
+    .addOption(
+      new Option('--from-token <token>', 'Squid-supported source token symbol, address, or "native"').env(
+        'SOURCE_TOKEN'
+      )
+    )
     .addOption(
       new Option('--max-source-amount <amount>', 'Maximum source-token amount for this operation').env(
         'MAX_SOURCE_AMOUNT'
@@ -49,7 +55,7 @@ export function addFundingSourceOptions(command: Command): Command {
     .addOption(
       new Option('--slippage <percent>', 'Maximum Squid quote slippage percentage (default: 1)')
         .env('SQUID_SLIPPAGE')
-        .argParser(positiveNumber)
+        .argParser(squidSlippage)
     )
 }
 

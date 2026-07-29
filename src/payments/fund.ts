@@ -17,9 +17,11 @@ import {
   DEFAULT_LOCKUP_DAYS,
   depositUSDFC,
   executeFilecoinPayFunding,
+  getPaymentStatus,
   MIN_FIL_FOR_GAS,
   planFilecoinPayFunding,
   toStorageRunwaySummary,
+  validatePaymentRequirements,
   withdrawUSDFC,
 } from '../core/payments/index.js'
 import { getClientAddress, initializeSynapse } from '../core/synapse/index.js'
@@ -29,7 +31,7 @@ import { getCLILogger, parseCLIAuth } from '../utils/cli-auth.js'
 import type { Spinner } from '../utils/cli-helpers.js'
 import { cancel, createSpinner, intro, isInteractive, outro } from '../utils/cli-helpers.js'
 import { isTTY, log } from '../utils/cli-logger.js'
-import { acquirePaymentShortfalls, type PaymentAcquisitionSummary } from './squid-funding.js'
+import { acquirePaymentShortfalls, isFundingSourceRequested, type PaymentAcquisitionSummary } from './squid-funding.js'
 import type { AutoFundOptions, FundingAdjustmentResult, FundOptions } from './types.js'
 
 // Helper: confirm/warn or bail when target implies < lockup-days runway
@@ -268,12 +270,14 @@ export async function runFund(options: FundOptions): Promise<void> {
     }
 
     spinner.start('Calculating funding plan...')
+    const sourceAcquisitionRequested = isFundingSourceRequested(options)
     const planResult = await planFilecoinPayFunding({
       synapse,
       targetRunwayDays: hasDays ? targetDays : undefined,
       targetDeposit: hasAmount ? targetDeposit : undefined,
       mode: options.mode ?? 'exact',
       allowWithdraw: options.mode !== 'minimum',
+      allowUnderfundedWallet: sourceAcquisitionRequested,
     })
     const { plan } = planResult
     spinner.stop(`${pc.green('✓')} Funding plan prepared`)
@@ -341,11 +345,11 @@ export async function runFund(options: FundOptions): Promise<void> {
       return
     }
 
-    if (plan.delta > 0n) {
+    if (plan.delta > 0n && sourceAcquisitionRequested) {
       const filShortfall =
         planResult.status.filBalance < MIN_FIL_FOR_GAS ? MIN_FIL_FOR_GAS - planResult.status.filBalance : 0n
       const usdfcShortfall = plan.walletShortfall ?? 0n
-      await acquirePaymentShortfalls({
+      const acquired = await acquirePaymentShortfalls({
         synapse,
         owner: getClientAddress(synapse),
         destinationChainId: synapse.chain.id,
@@ -353,15 +357,28 @@ export async function runFund(options: FundOptions): Promise<void> {
         requiredWalletUsdfc: plan.delta,
         options,
         confirm: async (summary: PaymentAcquisitionSummary) => {
-          if (!isTTY()) return
           const amount = summary.quotes.reduce((total, quote) => total + quote.sourceAmount, 0n)
+          const spend = `${formatUnits(amount, summary.source.decimals)} ${summary.source.symbol}`
+          if (!isInteractive()) {
+            log.line(pc.gray(`Non-interactive run: authorized to spend up to ${spend} to fund the Filecoin wallet`))
+            log.flush()
+            return
+          }
           const proceed = await confirm({
-            message: `Spend up to ${formatUnits(amount, summary.source.decimals)} ${summary.source.symbol} to fund the Filecoin wallet?`,
+            message: `Spend up to ${spend} to fund the Filecoin wallet?`,
             initialValue: false,
           })
           if (isCancel(proceed) || !proceed) throw new CliIncomplete('Source acquisition cancelled by user')
         },
       })
+      if (acquired) {
+        const refreshed = await getPaymentStatus(synapse)
+        const validation = validatePaymentRequirements(refreshed.filBalance, refreshed.walletUsdfcBalance, false)
+        if (!validation.isValid) {
+          const help = validation.helpMessage != null ? ` ${validation.helpMessage}` : ''
+          throw new Error(`${validation.errorMessage ?? 'Payment validation failed'}${help}`)
+        }
+      }
     }
 
     await performAdjustment({

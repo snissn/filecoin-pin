@@ -8,8 +8,15 @@ const { mockConfirm, mockIsCancel, mockCancel, mockPlan, mockDeposit, mockWithdr
   mockPlan: vi.fn(),
   mockDeposit: vi.fn(),
   mockWithdraw: vi.fn(),
-  mockAcquire: vi.fn(async () => false),
+  mockAcquire: vi.fn(async (_input?: unknown) => false),
 }))
+
+function isFundingSourceRequested(options: Record<string, unknown>): boolean {
+  return ['fromChain', 'fromToken', 'maxSourceAmount', 'sourceRpcUrl', 'slippage'].some((key) => {
+    const value = options[key]
+    return typeof value === 'string' ? value.trim() !== '' : value != null
+  })
+}
 
 vi.mock('@clack/prompts', () => ({
   confirm: mockConfirm,
@@ -22,7 +29,10 @@ vi.mock('../../core/synapse/index.js', () => ({
   })),
   getClientAddress: vi.fn(() => '0x1111111111111111111111111111111111111111'),
 }))
-vi.mock('../../payments/squid-funding.js', () => ({ acquirePaymentShortfalls: mockAcquire }))
+vi.mock('../../payments/squid-funding.js', () => ({
+  acquirePaymentShortfalls: mockAcquire,
+  isFundingSourceRequested,
+}))
 vi.mock('../../utils/cli-auth.js', () => ({
   parseCLIAuth: vi.fn(() => ({})),
   getCLILogger: vi.fn(() => ({})),
@@ -42,6 +52,8 @@ vi.mock('../../core/payments/index.js', () => ({
   DEFAULT_LOCKUP_DAYS: 30,
   MIN_FIL_FOR_GAS: 100n,
   planFilecoinPayFunding: mockPlan,
+  getPaymentStatus: vi.fn(async () => ({ filBalance: 100n, walletUsdfcBalance: 1_000n })),
+  validatePaymentRequirements: vi.fn(() => ({ isValid: true })),
   checkUSDFCBalance: vi.fn(async () => 1_000_000_000_000_000_000_000n),
   depositUSDFC: mockDeposit,
   withdrawUSDFC: mockWithdraw,
@@ -155,5 +167,33 @@ describe('runFund confirmation exit codes', () => {
       })
     )
     expect(mockDeposit).toHaveBeenCalledWith(expect.anything(), 500n)
+  })
+
+  it('uses the incomplete exit path when source acquisition is declined', async () => {
+    const result = planResult(500n)
+    result.plan.walletShortfall = 300n
+    mockPlan.mockResolvedValueOnce(result)
+    mockConfirm.mockResolvedValueOnce(false)
+    mockAcquire.mockImplementationOnce(async (value) => {
+      const input = value as {
+        confirm: (summary: {
+          source: { decimals: number; symbol: string }
+          quotes: never[]
+          maxSourceAmount: bigint
+        }) => Promise<void>
+      }
+      await input.confirm({
+        source: { decimals: 6, symbol: 'USDC' },
+        quotes: [],
+        maxSourceAmount: 1_000_000n,
+      })
+      return false
+    })
+
+    await runFund({ amount: '5', fromChain: 'arbitrum', fromToken: 'USDC', maxSourceAmount: '1' })
+
+    expect(mockDeposit).not.toHaveBeenCalled()
+    expect(mockCancel).toHaveBeenCalledWith('Source acquisition cancelled by user')
+    expect(process.exitCode).toBe(2)
   })
 })
