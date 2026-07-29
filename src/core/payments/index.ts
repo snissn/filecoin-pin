@@ -274,7 +274,7 @@ export function validatePaymentRequirements(
  *
  * This demonstrates the deposit process required for ERC20 tokens:
  * 1. On public networks, use permit to combine approval, deposit, and operator approval
- * 2. On local devnet, use approve then deposit because MockUSDFC does not implement permit
+ * 2. On local devnet, use the SDK's non-permit deposit flow because MockUSDFC does not implement permit
  *
  * Example usage:
  * ```typescript

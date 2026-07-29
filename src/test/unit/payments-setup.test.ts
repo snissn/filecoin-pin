@@ -188,7 +188,7 @@ describe('Payment Setup Tests', () => {
       expect(mockSynapse.payments.depositWithPermitAndApproveOperator).toHaveBeenCalled()
     })
 
-    it('uses approve then deposit for devnet tokens without permit support', async () => {
+    it('uses the non-permit deposit flow for devnet tokens', async () => {
       mockSynapse.chain.id = 31415926
       mockSynapse.payments.allowance.mockResolvedValue(parseUnits('0', 18))
 
