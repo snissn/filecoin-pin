@@ -232,9 +232,13 @@ export async function acquirePaymentShortfalls(input: AcquirePaymentShortfallsIn
         throw new Error('Squid funding state belongs to a different owner')
       }
       if (state.source.chain.chainId !== policy.chain.id || !selected(state.source, tokenSelector)) {
-        throw new Error('Squid funding state belongs to a different source selection')
+        if ((state.checkpoint?.steps.length ?? 0) > 0) {
+          throw new Error('Squid funding state belongs to a different source selection')
+        }
+        await store.clear()
+        state = undefined
       }
-      if (!resumable(state, currentRequirements)) {
+      if (state != null && !resumable(state, currentRequirements)) {
         if ((state.checkpoint?.steps.length ?? 0) > 0) {
           throw new Error('Wallet shortfalls changed during a submitted Squid operation; reconcile it manually')
         }

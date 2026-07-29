@@ -208,6 +208,39 @@ describe('Squid payment funding adapter', () => {
     expect(mocks.execute).toHaveBeenCalledTimes(2)
   })
 
+  it('replaces an unsubmitted plan when the user selects a different source', async () => {
+    const arbitrumQuotes = [
+      quote('fil', { id: 'filecoin-fil', amount: 7n, token: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' }),
+      quote('usdfc', { id: 'filecoin-usdfc', amount: 11n, token: '0x80B98d3aa09ffff255c3ba4A241111Ff1262F045' }),
+    ]
+    const baseSource = { ...SOURCE, chain: { chainId: 8453, networkName: 'Base' } }
+    const baseQuotes = arbitrumQuotes.map((item) => ({ ...item, source: baseSource }))
+    mocks.plan.mockResolvedValueOnce(arbitrumQuotes).mockResolvedValueOnce(baseQuotes)
+    mocks.execute.mockResolvedValue({
+      executionId: 'execution',
+      steps: [],
+      integrity: `0x${'33'.repeat(32)}`,
+    })
+
+    await expect(
+      acquirePaymentShortfalls({
+        ...input(),
+        confirm: async () => {
+          throw new Error('declined')
+        },
+      })
+    ).rejects.toThrow('declined')
+
+    mocks.resolveSource.mockReturnValue(baseSource)
+    await expect(
+      acquirePaymentShortfalls({ ...input(), options: { ...input().options, fromChain: 'base' } })
+    ).resolves.toBe(true)
+
+    expect(mocks.plan).toHaveBeenCalledTimes(2)
+    expect(mocks.execute).toHaveBeenCalledOnce()
+    expect(clear).toHaveBeenCalledTimes(2)
+  })
+
   it('configures OP Stack total-fee accounting and a non-decreasing buffer', async () => {
     const baseSource = { ...SOURCE, chain: { chainId: 8453, networkName: 'Base' } }
     mocks.resolveSource.mockReturnValue(baseSource)
