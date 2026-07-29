@@ -239,7 +239,7 @@ Note that the filecoin-pin CLI's `--session-key` flag (and `SESSION_KEY` environ
 
 ## Squid
 
-Squid is the cross-chain routing service Filecoin Pin uses to acquire FIL or USDFC missing from a Filecoin Mainnet wallet before a payment command continues. Supported tokens and available routes are read from Squid at command time and can change. See the [Squid API documentation](https://docs.squidrouter.com/api).
+Squid is the cross-chain routing service [Filecoin Pin](#filecoin-pin) uses to acquire [FIL](#fil) or [USDFC](#usdfc) missing from a Filecoin Mainnet wallet before a payment command continues. Supported tokens and available routes are read from Squid at command time and can change. See the [Squid API documentation](https://docs.squidrouter.com/api).
 
 
 ## Standard IPFS Tooling
