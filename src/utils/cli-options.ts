@@ -61,7 +61,8 @@ export function addFundingSourceOptions(command: Command): Command {
   return command.addHelpText(
     'after',
     `
-Squid funding is available only on Filecoin Mainnet. It also requires:
+Squid funding is available only on Filecoin Mainnet and requires owner
+private-key authentication (--private-key or PRIVATE_KEY). It also requires:
   SQUID_INTEGRATOR_ID
   SQUID_CHECKPOINT_INTEGRITY_KEY  persistent, separate 32-byte key
 See the README for setup.`

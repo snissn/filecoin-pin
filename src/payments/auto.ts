@@ -198,6 +198,12 @@ export async function runAutoSetup(options: PaymentSetupOptions): Promise<void> 
         spinner.stop(`${pc.green('✓')} Updated payment allowances, tx: ${transactionHash}`)
         actionsTaken = true
       } else {
+        const refreshedAllowanceCheck = await checkAllowances(synapse)
+        if (refreshedAllowanceCheck.needsUpdate) {
+          throw new Error(
+            'Payment allowances must be updated by the owner wallet. Rerun with --private-key or PRIVATE_KEY.'
+          )
+        }
         spinner.stop(`${pc.green('✓')} Payment allowances already sufficient`)
       }
     } else if (!needsDeposit) {

@@ -146,4 +146,32 @@ describe('payments setup --auto source acquisition', () => {
     expect(mocks.getStatus).toHaveBeenCalledOnce()
     expect(mocks.deposit).toHaveBeenCalledWith(synapse, 100n)
   })
+
+  it('fails closed when session-key setup cannot update payment allowances', async () => {
+    mocks.checkFIL.mockResolvedValue({ balance: 100n, isCalibnet: false, hasSufficientGas: true })
+    mocks.checkUSDFC.mockResolvedValue(100n)
+    mocks.getStatus.mockReset().mockResolvedValue({
+      filecoinPayBalance: 100n,
+      filBalance: 100n,
+      walletUsdfcBalance: 100n,
+      currentAllowances: { lockupUsage: 0n },
+    })
+    mocks.checkAllowances.mockResolvedValue({ needsUpdate: true })
+    mocks.setAllowances.mockResolvedValue({
+      updated: false,
+      currentAllowances: { lockupUsage: 0n },
+    })
+
+    await expect(
+      runAutoSetup({
+        auto: true,
+        rateAllowance: '1TiB/month',
+        walletAddress: owner,
+        sessionKey: `0x${'22'.repeat(32)}`,
+      })
+    ).rejects.toThrow('Payment allowances must be updated by the owner wallet')
+
+    expect(mocks.deposit).not.toHaveBeenCalled()
+    expect(mocks.checkAllowances).toHaveBeenCalledTimes(2)
+  })
 })

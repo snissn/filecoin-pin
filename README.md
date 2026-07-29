@@ -211,7 +211,7 @@ On Filecoin Mainnet, `payments fund` and `payments setup --auto` can use [Squid]
 
 Source chains are limited to Filecoin, Arbitrum, Ethereum, Base, Optimism, Polygon, Avalanche, and BNB Chain. The source can be any token in Squid's current catalog for that chain when Squid returns a route to the required FIL or USDFC. Catalog entries, liquidity, and route availability can change, so a token appearing in the catalog does not guarantee a route.
 
-The same wallet address must control the funds on the source chain and Filecoin. This flow also requires a [Squid integrator ID](https://docs.squidrouter.com/getting-started/integrator-quickstart) and a separate key that authenticates saved progress:
+Squid acquisition requires owner private-key authentication (`--private-key` or `PRIVATE_KEY`); session-key authentication cannot sign source-chain approvals or transactions. The same wallet address must control the funds on the source chain and Filecoin. This flow also requires a [Squid integrator ID](https://docs.squidrouter.com/getting-started/integrator-quickstart) and a separate key that authenticates saved progress:
 
 ```bash
 export SQUID_INTEGRATOR_ID=your-integrator-id

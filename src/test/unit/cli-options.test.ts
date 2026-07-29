@@ -178,6 +178,7 @@ describe('source funding help', () => {
     expect(help).toContain('SQUID_INTEGRATOR_ID')
     expect(help).toContain('SQUID_CHECKPOINT_INTEGRITY_KEY')
     expect(help).toContain('only on Filecoin Mainnet')
+    expect(help).toContain('--private-key or PRIVATE_KEY')
   })
 })
 
