@@ -346,6 +346,12 @@ export async function runFund(options: FundOptions): Promise<void> {
       return
     }
 
+    if (!sourceAcquisitionRequested && plan.walletShortfall != null && plan.walletShortfall > 0n) {
+      throw new Error(
+        `Insufficient USDFC in wallet (need ${formatUSDFC(plan.delta)} USDFC, have ${formatUSDFC(planResult.status.walletUsdfcBalance)} USDFC)`
+      )
+    }
+
     if (sourceAcquisitionRequested) {
       const filShortfall =
         planResult.status.filBalance < MIN_FIL_FOR_GAS ? MIN_FIL_FOR_GAS - planResult.status.filBalance : 0n

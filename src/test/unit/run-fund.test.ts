@@ -144,6 +144,20 @@ describe('runFund confirmation exit codes', () => {
     expect(mockAcquire).not.toHaveBeenCalled()
   })
 
+  it('rejects a direct deposit when the wallet cannot cover the adjustment', async () => {
+    const result = planResult(500n)
+    result.plan.walletShortfall = 300n
+    result.status.walletUsdfcBalance = 200n
+    mockPlan.mockResolvedValueOnce(result)
+
+    await expect(runFund({ amount: '5' })).rejects.toThrow(
+      'Insufficient USDFC in wallet (need 500 USDFC, have 200 USDFC)'
+    )
+
+    expect(mockAcquire).not.toHaveBeenCalled()
+    expect(mockDeposit).not.toHaveBeenCalled()
+  })
+
   it('passes the exact FIL and USDFC shortfalls before resuming the deposit', async () => {
     const result = planResult(500n)
     result.plan.walletShortfall = 300n
