@@ -205,6 +205,35 @@ filecoin-pin data-set <dataset-id>
 filecoin-pin add myfile.txt --network calibration
 ```
 
+### Cover a payment shortfall with an EVM token
+
+On Filecoin Mainnet, `payments fund` and `payments setup --auto` can use [Squid](documentation/glossary.md#squid) to acquire only the FIL and USDFC missing from the Filecoin wallet before continuing. Directly funding the wallet remains the default; Filecoin Pin contacts Squid only when source options are provided.
+
+Source chains are limited to Filecoin, Arbitrum, Ethereum, Base, Optimism, Polygon, Avalanche, and BNB Chain. The source can be any token in Squid's current catalog for that chain when Squid returns a route to the required FIL or USDFC. Catalog entries, liquidity, and route availability can change, so a token appearing in the catalog does not guarantee a route.
+
+The same wallet address must control the funds on the source chain and Filecoin. This flow also requires a [Squid integrator ID](https://docs.squidrouter.com/getting-started/integrator-quickstart) and a separate key that authenticates saved progress:
+
+```bash
+export SQUID_INTEGRATOR_ID=your-integrator-id
+export SQUID_CHECKPOINT_INTEGRITY_KEY=$(node -e 'process.stdout.write(`0x${require("node:crypto").randomBytes(32).toString("hex")}`)')
+```
+
+Store `SQUID_CHECKPOINT_INTEGRITY_KEY` in your secret manager and reuse the same value on later runs. It must be 32 random bytes written as `0x` followed by 64 hexadecimal characters; do not use the wallet private key. Changing or losing it prevents Filecoin Pin from verifying saved progress after an interrupted operation.
+
+Choose the source token by contract address, an unambiguous symbol, or `native`, and set an explicit maximum amount that Filecoin Pin may spend. Use the contract address when a symbol identifies more than one token:
+
+```bash
+filecoin-pin payments fund --days 30 \
+  --from-chain arbitrum \
+  --from-token USDC \
+  --max-source-amount 10 \
+  --source-rpc-url https://your-arbitrum-rpc.example
+```
+
+The same source options work with `payments setup --auto`. They are also available through `SOURCE_CHAIN`, `SOURCE_TOKEN`, `MAX_SOURCE_AMOUNT`, `SOURCE_RPC_URL`, and `SQUID_SLIPPAGE`; command-line options take precedence. If an operation is interrupted, rerun the same command with the same source selection and checkpoint integrity key. Filecoin Pin resumes recorded progress instead of planning new source spending.
+
+Cross-chain acquisition is not available on Calibration or local devnet. Those networks continue to require direct test FIL and USDFC funding.
+
 For detailed guides, see:
 - **CLI**: [Complete CLI walkthrough](https://docs.filecoin.io/builder-cookbook/filecoin-pin/filecoin-pin-cli)
 - **GitHub Action**: [CI/CD integration guide](https://docs.filecoin.io/builder-cookbook/filecoin-pin/github-action)
@@ -274,6 +303,15 @@ NETWORK=mainnet                # Network to use: mainnet, calibration, or devnet
 RPC_URL=wss://...              # Filecoin RPC endpoint (overrides NETWORK if specified)
                                # Mainnet: wss://wss.node.glif.io/apigw/lotus/rpc/v1
                                # Calibration: wss://wss.calibration.node.glif.io/apigw/lotus/rpc/v1
+
+# Optional - cover a Mainnet payment shortfall from another EVM chain
+SQUID_INTEGRATOR_ID=...         # Squid-issued integration identifier
+SQUID_CHECKPOINT_INTEGRITY_KEY=0x...  # Persistent, separate 32-byte random key
+SOURCE_CHAIN=arbitrum          # Selected source chain
+SOURCE_TOKEN=USDC              # Token symbol, contract address, or native
+MAX_SOURCE_AMOUNT=10           # Hard source-token spend limit for the operation
+SOURCE_RPC_URL=https://...      # RPC endpoint for the source chain
+SQUID_SLIPPAGE=1               # Maximum quote slippage percentage (default: 1)
 
 # Optional for Pinning Server Daemon
 ACCESS_TOKEN=...               # Bearer token required on all API requests except GET /

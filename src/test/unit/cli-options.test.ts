@@ -6,6 +6,7 @@ import { log } from '../../utils/cli-logger.js'
 import {
   addAuthOptions,
   addDataSetIdOption,
+  addFundingSourceOptions,
   addNetworkOptions,
   addOwnerAuthOptions,
   addProviderIdOption,
@@ -159,6 +160,24 @@ describe('auth and context option env bindings', () => {
     if (createCommand) {
       expect(envVarFor(createCommand, '--session-key')).toBe('SESSION_KEY')
     }
+  })
+})
+
+describe('source funding help', () => {
+  it('shows the source option env bindings and required Squid configuration', () => {
+    const command = addFundingSourceOptions(new Command())
+    let help = ''
+    command.configureOutput({ writeOut: (value) => (help += value) })
+    command.outputHelp()
+
+    expect(envVarFor(command, '--from-chain')).toBe('SOURCE_CHAIN')
+    expect(envVarFor(command, '--from-token')).toBe('SOURCE_TOKEN')
+    expect(envVarFor(command, '--max-source-amount')).toBe('MAX_SOURCE_AMOUNT')
+    expect(envVarFor(command, '--source-rpc-url')).toBe('SOURCE_RPC_URL')
+    expect(envVarFor(command, '--slippage')).toBe('SQUID_SLIPPAGE')
+    expect(help).toContain('SQUID_INTEGRATOR_ID')
+    expect(help).toContain('SQUID_CHECKPOINT_INTEGRITY_KEY')
+    expect(help).toContain('only on Filecoin Mainnet')
   })
 })
 

@@ -39,7 +39,7 @@ function squidSlippage(value: string): number {
 
 /** Add the explicit source selection used only when a payment command finds a wallet shortfall. */
 export function addFundingSourceOptions(command: Command): Command {
-  return command
+  command
     .addOption(new Option('--from-chain <chain>', 'Source EVM chain').env('SOURCE_CHAIN'))
     .addOption(
       new Option('--from-token <token>', 'Squid-supported source token symbol, address, or "native"').env(
@@ -57,6 +57,15 @@ export function addFundingSourceOptions(command: Command): Command {
         .env('SQUID_SLIPPAGE')
         .argParser(squidSlippage)
     )
+
+  return command.addHelpText(
+    'after',
+    `
+Squid funding is available only on Filecoin Mainnet. It also requires:
+  SQUID_INTEGRATOR_ID
+  SQUID_CHECKPOINT_INTEGRITY_KEY  persistent, separate 32-byte key
+See the README for setup.`
+  )
 }
 
 /**
