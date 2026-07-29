@@ -187,6 +187,17 @@ describe('Payment Setup Tests', () => {
       expect(result.depositTx).toBe('0xdepositWithPermitAndApproveOperator')
       expect(mockSynapse.payments.depositWithPermitAndApproveOperator).toHaveBeenCalled()
     })
+
+    it('uses approve then deposit for devnet tokens without permit support', async () => {
+      mockSynapse.chain.id = 31415926
+      mockSynapse.payments.allowance.mockResolvedValue(parseUnits('0', 18))
+
+      const result = await depositUSDFC(mockSynapse, parseUnits('5', 18))
+
+      expect(result.depositTx).toBe('0xdeposit')
+      expect(mockSynapse.payments.deposit).toHaveBeenCalledWith({ amount: parseUnits('5', 18) })
+      expect(mockSynapse.payments.depositWithPermitAndApproveOperator).not.toHaveBeenCalled()
+    })
   })
 
   describe('setServiceApprovals', () => {

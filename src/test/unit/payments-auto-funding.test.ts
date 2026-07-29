@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   checkFIL: vi.fn(),
   checkUSDFC: vi.fn(),
   checkAllowances: vi.fn(),
+  setAllowances: vi.fn(),
 }))
 
 const owner = '0x1111111111111111111111111111111111111111'
@@ -48,7 +49,7 @@ vi.mock('../../core/payments/index.js', () => ({
   checkUSDFCBalance: mocks.checkUSDFC,
   getPaymentStatus: mocks.getStatus,
   checkAllowances: mocks.checkAllowances,
-  checkAndSetAllowances: vi.fn(),
+  checkAndSetAllowances: mocks.setAllowances,
   computeAutoSetupTargetBalance: vi.fn(() => ({ targetBalance: 100n })),
   validatePaymentRequirements: vi.fn(() => ({ isValid: true })),
   validateGasRequirement: vi.fn(() => ({ isValid: true })),
@@ -95,6 +96,7 @@ describe('payments setup --auto source acquisition', () => {
       })
     mocks.acquire.mockResolvedValue(true)
     mocks.deposit.mockResolvedValue({ depositTx: '0xdeposit' })
+    mocks.setAllowances.mockResolvedValue({ updated: true, transactionHash: '0xallowance' })
   })
 
   it('uses the existing setup target, then resumes deposit and ready output', async () => {
@@ -119,6 +121,7 @@ describe('payments setup --auto source acquisition', () => {
       })
     )
     expect(mocks.deposit).toHaveBeenCalledWith(synapse, 100n)
+    expect(mocks.setAllowances).toHaveBeenCalledWith(synapse)
   })
 
   it('skips acquisition and balance refresh when the wallet already covers the setup target', async () => {

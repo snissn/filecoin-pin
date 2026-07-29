@@ -189,15 +189,21 @@ export async function runAutoSetup(options: PaymentSetupOptions): Promise<void> 
       log.line(pc.bold('Transaction details:'))
       log.indent(pc.gray(`Deposit: ${depositTx}`))
       log.flush()
-    } else {
-      // Use a dummy spinner to get consistent formatting
-      spinner.start('Checking deposit...')
+    }
+
+    if (needsAllowanceUpdate) {
+      spinner.start('Updating payment allowances...')
       const { updated, transactionHash } = await checkAndSetAllowances(synapse)
       if (updated) {
         spinner.stop(`${pc.green('✓')} Updated payment allowances, tx: ${transactionHash}`)
+        actionsTaken = true
       } else {
-        spinner.stop(`${pc.green('✓')} Deposit already sufficient (${formatUSDFC(status.filecoinPayBalance)} USDFC)`)
+        spinner.stop(`${pc.green('✓')} Payment allowances already sufficient`)
       }
+    } else if (!needsDeposit) {
+      // Use a dummy spinner to get consistent formatting
+      spinner.start('Checking deposit...')
+      spinner.stop(`${pc.green('✓')} Deposit already sufficient (${formatUSDFC(status.filecoinPayBalance)} USDFC)`)
     }
 
     // Calculate capacity for final summary

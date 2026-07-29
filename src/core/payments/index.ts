@@ -25,6 +25,7 @@ import {
 } from '@filoz/synapse-core/warm-storage'
 import { calibration, SIZE_CONSTANTS, type Synapse, TIME_CONSTANTS, TOKENS } from '@filoz/synapse-sdk'
 import { formatUnits, type Hash } from 'viem'
+import { DEVNET_CHAIN_ID } from '../../common/constants.js'
 import { getClientAddress, isSessionKeyMode } from '../synapse/index.js'
 import { formatFIL } from '../utils/format.js'
 import { assertPriceNonZero } from '../utils/validate-pricing.js'
@@ -271,9 +272,9 @@ export function validatePaymentRequirements(
 /**
  * Deposit USDFC into the Payments contract
  *
- * This demonstrates the single-step process required for depositing ERC20 tokens:
- * 1. If approval is insufficient, use permit to approve and deposit in one transaction
- * 2. If approval is sufficient, directly call deposit
+ * This demonstrates the deposit process required for ERC20 tokens:
+ * 1. On public networks, use permit to combine approval, deposit, and operator approval
+ * 2. On local devnet, use approve then deposit because MockUSDFC does not implement permit
  *
  * Example usage:
  * ```typescript
@@ -292,23 +293,27 @@ export async function depositUSDFC(
 ): Promise<{
   depositTx: string
 }> {
-  const needsAllowanceUpdate = (await checkAllowances(synapse)).needsUpdate
-  const amountMoreThanCurrentAllowance =
-    (await synapse.payments.allowance({ spender: synapse.chain.contracts.filecoinPay.address })) < amount
-
   let txHash: Hash
 
-  if (amountMoreThanCurrentAllowance || needsAllowanceUpdate) {
-    txHash = await synapse.payments.depositWithPermitAndApproveOperator({
-      amount,
-      operator: synapse.chain.contracts.fwss.address,
-      rateAllowance: MAX_RATE_ALLOWANCE,
-      lockupAllowance: MAX_LOCKUP_ALLOWANCE,
-      // maxLockupPeriod omitted: the SDK resolves the chain default
-      // (priceList.lockups.defaultLockupPeriod) so we always cover it.
-    })
-  } else {
+  if (synapse.chain.id === DEVNET_CHAIN_ID) {
     txHash = await synapse.payments.deposit({ amount })
+  } else {
+    const needsAllowanceUpdate = (await checkAllowances(synapse)).needsUpdate
+    const amountMoreThanCurrentAllowance =
+      (await synapse.payments.allowance({ spender: synapse.chain.contracts.filecoinPay.address })) < amount
+
+    if (amountMoreThanCurrentAllowance || needsAllowanceUpdate) {
+      txHash = await synapse.payments.depositWithPermitAndApproveOperator({
+        amount,
+        operator: synapse.chain.contracts.fwss.address,
+        rateAllowance: MAX_RATE_ALLOWANCE,
+        lockupAllowance: MAX_LOCKUP_ALLOWANCE,
+        // maxLockupPeriod omitted: the SDK resolves the chain default
+        // (priceList.lockups.defaultLockupPeriod) so we always cover it.
+      })
+    } else {
+      txHash = await synapse.payments.deposit({ amount })
+    }
   }
 
   await synapse.client.waitForTransactionReceipt({ hash: txHash })
