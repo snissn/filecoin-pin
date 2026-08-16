@@ -6,6 +6,7 @@ import { paymentsCommand } from './payments.js'
 import { providerCommand } from './provider.js'
 import { removeCommand } from './remove.js'
 import { serverCommand } from './server.js'
+import { servicesCommand } from './services.js'
 import { sessionCommand } from './session.js'
 
 export {
@@ -16,6 +17,7 @@ export {
   providerCommand,
   removeCommand,
   serverCommand,
+  servicesCommand,
   sessionCommand,
 }
 
@@ -28,6 +30,6 @@ interface CliCommandGroup {
 export const CLI_COMMAND_GROUPS: readonly CliCommandGroup[] = [
   { heading: 'UPLOAD', commands: [addCommand, importCommand] },
   { heading: 'PAYMENTS', commands: [paymentsCommand] },
-  { heading: 'MANAGEMENT', commands: [dataSetCommand, providerCommand, removeCommand] },
+  { heading: 'MANAGEMENT', commands: [dataSetCommand, providerCommand, servicesCommand, removeCommand] },
   { heading: 'ADVANCED', commands: [sessionCommand, serverCommand] },
 ]
